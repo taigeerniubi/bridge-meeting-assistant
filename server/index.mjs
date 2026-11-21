@@ -7,6 +7,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { initialConfig, publicConfig, updateConfig } from './config.mjs';
 import { generateJson, transcribe, synthesize, ServiceError } from './providers.mjs';
 import { translationMessages, summaryMessages, validateSummary } from './prompts.mjs';
+import { createLiveGateway } from './live-translation.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json' };
@@ -24,13 +25,13 @@ async function jsonBody(req) {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw new ServiceError('JSON 格式不正确。', 400); }
 }
 
-export function createHandler({ config = initialConfig(), accessToken = '', publicOrigin = '', services = {}, testMode = false } = {}) {
+export function createHandler({ config = initialConfig(), accessToken = '', publicOrigin = '', services = {}, testMode = false, liveSocketFactory } = {}) {
   let settings = config;
   const csrf = randomBytes(32).toString('hex');
   const authCookie = randomBytes(32).toString('hex');
   const service = { generateJson, transcribe, synthesize, ...services };
   let inFlight = 0;
-  return async (req, res) => {
+  const handler = async (req, res) => {
     const headers = {
       'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
       'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'",
@@ -56,7 +57,7 @@ export function createHandler({ config = initialConfig(), accessToken = '', publ
       const authorized = !accessToken || req.headers.cookie?.split(';').some(item => item.trim() === `bridge_auth=${authCookie}`);
       if (url.pathname.startsWith('/api/')) {
         if (!authorized) return send(401, { error: '请先输入访问密码。', locked: true });
-        if (req.method === 'GET' && url.pathname === '/api/bootstrap') return send(200, { csrf, config: publicConfig(settings), version: '0.1.0', testMode });
+        if (req.method === 'GET' && url.pathname === '/api/bootstrap') return send(200, { csrf, config: publicConfig(settings), version: '0.1.0', testMode, capabilities: { liveTranslation: true } });
         if (req.method !== 'POST') return send(405, { error: '不支持此请求方式。' });
         if (!equals(req.headers['x-bridge-token'], csrf)) return send(403, { error: '页面会话已失效，请刷新后重试。' });
         const body = await jsonBody(req);
@@ -105,6 +106,18 @@ export function createHandler({ config = initialConfig(), accessToken = '', publ
       send(error.status || 500, { error: message.slice(0, 500) });
     } finally { if (counted) inFlight--; }
   };
+  handler.upgrade = createLiveGateway({ getConfig: () => settings, socketFactory: liveSocketFactory, authorize: req => {
+    try {
+      const host = req.headers.host || '';
+      const origin = `${req.socket.encrypted ? 'https' : 'http'}://${host}`;
+      const hostAllowed = publicOrigin ? origin === publicOrigin : /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(host);
+      const url = new URL(req.url, origin);
+      const authorized = !accessToken || req.headers.cookie?.split(';').some(item => item.trim() === `bridge_auth=${authCookie}`);
+      return hostAllowed && authorized && req.headers.origin === origin && req.headers['sec-fetch-site'] !== 'cross-site'
+        && url.pathname === '/api/live' && equals(url.searchParams.get('csrf'), csrf);
+    } catch { return false; }
+  } });
+  return handler;
 }
 
 export async function startServer({ port, host, env = process.env, desktop = false } = {}) {
@@ -116,6 +129,8 @@ export async function startServer({ port, host, env = process.env, desktop = fal
   if (!['127.0.0.1', 'localhost', '::1'].includes(host) && (!tls || !env.ACCESS_TOKEN || !env.PUBLIC_ORIGIN)) throw new Error('手机 / 局域网接入需要 TLS_CERT、TLS_KEY、ACCESS_TOKEN 和 PUBLIC_ORIGIN。');
   const handler = createHandler({ config: initialConfig(env), accessToken: env.ACCESS_TOKEN, publicOrigin: env.PUBLIC_ORIGIN });
   const server = tls ? https.createServer({ cert: await readFile(resolve(root, env.TLS_CERT)), key: await readFile(resolve(root, env.TLS_KEY)) }, handler) : http.createServer(handler);
+  server.on('upgrade', handler.upgrade);
+  server.on('close', () => handler.upgrade.close());
   server.requestTimeout = 120000;
   await new Promise((resolveReady, reject) => { server.once('error', reject); server.listen(port, host, resolveReady); });
   const address = server.address();

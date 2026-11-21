@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SpeechSegmenter, pcmToWav, downsample } from '../public/audio-core.mjs';
+import { AudioCapture } from '../public/capture.mjs';
 import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 
@@ -53,4 +54,15 @@ test('worklet flush returns the final partial audio frame before acknowledging s
   assert.equal(messages[1], 'flushed');
   processor.port.onmessage({ data: 'flush' }); assert.equal(messages.length, 3);
   assert.equal(messages[2], 'flushed');
+});
+
+test('a failed final audio send still releases every input track and audio context', async () => {
+  const capture = new AudioCapture({});
+  const tracks = [{ stopped: false, stop() { this.stopped = true; } }, { stopped: false, stop() { this.stopped = true; } }];
+  capture.stream = { getTracks: () => tracks };
+  capture.context = { state: 'suspended', async close() { this.state = 'closed'; } };
+  capture.encoder = { flush() { throw new Error('Socket disconnected'); } };
+  await assert.rejects(capture.stop(), /Socket disconnected/);
+  assert.ok(tracks.every(track => track.stopped));
+  assert.equal(capture.context.state, 'closed'); assert.equal(capture.stopped, true);
 });

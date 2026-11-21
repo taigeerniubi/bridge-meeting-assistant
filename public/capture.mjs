@@ -1,7 +1,7 @@
-import { SpeechSegmenter, downsample, pcmToWav } from './audio-core.mjs';
+import { SpeechSegmenter, downsample, pcmToWav, PcmStreamEncoder } from './audio-core.mjs';
 
 export class AudioCapture {
-  constructor({ onSegment, onLevel, onEnded, onError }) { Object.assign(this, { onSegment, onLevel, onEnded, onError }); this.blocked = false; }
+  constructor({ onSegment, onPcm, onLevel, onEnded, onError }) { Object.assign(this, { onSegment, onPcm, onLevel, onEnded, onError }); this.blocked = false; }
   async start(kind, deviceId = '') {
     if (!globalThis.isSecureContext || !navigator.mediaDevices) throw new Error('麦克风需要安全连接：电脑使用 localhost，手机请使用可信的 HTTPS 地址。');
     if (kind === 'system' && !navigator.mediaDevices.getDisplayMedia) throw new Error('此设备不支持会议音频共享，请使用麦克风或 Windows 桌面版。');
@@ -16,12 +16,13 @@ export class AudioCapture {
       this.context = new AudioContext();
       await this.context.resume();
       await this.context.audioWorklet.addModule('/capture-worklet.js');
-      this.segmenter = new SpeechSegmenter({ sampleRate: this.context.sampleRate, onSegment: (samples, rate) => this.onSegment(pcmToWav(downsample(samples, rate), 16000)) });
+      if (this.onPcm) this.encoder = new PcmStreamEncoder({ sampleRate: this.context.sampleRate, onFrame: this.onPcm });
+      else this.segmenter = new SpeechSegmenter({ sampleRate: this.context.sampleRate, onSegment: (samples, rate) => this.onSegment(pcmToWav(downsample(samples, rate), 16000)) });
       this.node = new AudioWorkletNode(this.context, 'bridge-capture');
       this.node.port.onmessage = event => {
         if (event.data === 'flushed') { this.flushComplete?.(); return; }
         if (this.stopped) return;
-        try { this.onLevel?.(this.blocked ? 0 : this.segmenter.push(event.data)); } catch (error) { this.onError?.(error); }
+        try { this.onLevel?.(this.encoder ? this.encoder.push(event.data, this.blocked) : this.blocked ? 0 : this.segmenter.push(event.data)); } catch (error) { this.onError?.(error); }
       };
       this.source = this.context.createMediaStreamSource(new MediaStream(stream.getAudioTracks()));
       this.silent = this.context.createGain(); this.silent.gain.value = 0;
@@ -53,11 +54,14 @@ export class AudioCapture {
         });
         this.flushComplete = null;
       }
-      this.segmenter?.flush(); this.stopped = true;
-      this.stream?.getTracks().forEach(track => { track.onended = null; track.stop(); });
-      this.node?.disconnect(); this.silent?.disconnect();
-      if (this.context && this.context.state !== 'closed') await this.context.close();
-      this.onLevel?.(0);
+      try { this.segmenter?.flush(); this.encoder?.flush(); }
+      finally {
+        this.stopped = true;
+        this.stream?.getTracks().forEach(track => { track.onended = null; track.stop(); });
+        this.node?.disconnect(); this.silent?.disconnect();
+        if (this.context && this.context.state !== 'closed') await this.context.close();
+        this.onLevel?.(0);
+      }
     })();
     return this.stopPromise;
   }

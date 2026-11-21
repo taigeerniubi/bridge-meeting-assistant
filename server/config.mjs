@@ -13,7 +13,9 @@ export function initialConfig(env = process.env) {
         key: env.DASHSCOPE_API_KEY || '', baseUrl: env.QWEN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
         ttsUrl: env.QWEN_TTS_URL || 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
         textModel: env.QWEN_TEXT_MODEL || 'qwen-plus', asrModel: env.QWEN_ASR_MODEL || 'qwen3-asr-flash',
-        speechModel: env.QWEN_SPEECH_MODEL || 'qwen3-tts-flash', voice: 'Cherry',
+        speechModel: env.QWEN_SPEECH_MODEL || 'qwen3-tts-flash', voice: env.QWEN_VOICE || 'Aiden',
+        liveModel: env.QWEN_REALTIME_MODEL || 'qwen3.8-livetranslate-flash-realtime', liveVoice: env.QWEN_REALTIME_VOICE || 'Aiden',
+        liveUrl: env.QWEN_REALTIME_URL || `${new URL(env.QWEN_BASE_URL || 'https://dashscope.aliyuncs.com').origin.replace(/^https:/, 'wss:')}/api-ws/v1/realtime`,
       },
     },
     routing: { asr: preferred, text: preferred, speech: preferred },
@@ -30,10 +32,10 @@ export function publicConfig(config) {
   };
 }
 
-function secureUrl(value) {
+function secureUrl(value, protocol = 'https:') {
   const url = new URL(value);
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
-    throw new Error('服务地址必须是没有密码、查询参数的 HTTPS 地址。');
+  if (url.protocol !== protocol || url.username || url.password || url.search || url.hash) {
+    throw new Error(`服务地址必须是没有密码、查询参数的 ${protocol === 'wss:' ? 'WSS' : 'HTTPS'} 地址。`);
   }
   return value.replace(/\/+$/, '');
 }
@@ -56,10 +58,10 @@ export function updateConfig(current, input) {
       if (typeof source.key !== 'string' || source.key.length > 4096 || /\s/.test(source.key)) throw new Error('API Key 格式不正确。');
       next.providers[name].key = source.key;
     }
-    for (const field of ['baseUrl', 'ttsUrl', 'textModel', 'asrModel', 'speechModel', 'voice']) {
+    for (const field of ['baseUrl', 'ttsUrl', 'textModel', 'asrModel', 'speechModel', 'voice', 'liveUrl', 'liveModel', 'liveVoice']) {
       if (source[field] === undefined || !(field in next.providers[name])) continue;
       if (typeof source[field] !== 'string' || !source[field].trim() || source[field].length > 500) throw new Error('模型或服务地址格式不正确。');
-      next.providers[name][field] = field.endsWith('Url') ? secureUrl(source[field].trim()) : source[field].trim();
+      next.providers[name][field] = field.endsWith('Url') ? secureUrl(source[field].trim(), field === 'liveUrl' ? 'wss:' : 'https:') : source[field].trim();
     }
   }
   return next;

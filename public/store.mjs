@@ -36,7 +36,7 @@ export function demoMeeting() {
 
 export function recoverMeeting(meeting) {
   for (const entry of meeting.entries || []) {
-    if (['queued', 'recognizing', 'translating'].includes(entry.status)) {
+    if (['queued', 'recognizing', 'translating', 'live'].includes(entry.status)) {
       entry.status = 'error'; entry.error = '上次处理因页面关闭而中断。文字可重试；未保存的音频需重新录入。';
     }
   }
@@ -55,7 +55,8 @@ export function exportMarkdown(meeting) {
   }
   lines.push('## 完整对话', '');
   for (const e of meeting.entries) {
-    lines.push(`### ${new Date(e.time).toLocaleTimeString('zh-CN')} · ${e.source === 'me' ? '我' : '对方'} [${e.id}]`, '', `原文：${e.original || '音频未识别成功'}`, '', `中文：${e.chinese || '未生成'}`, '', `英文：${e.english || '未生成'}`, '');
+    lines.push(`### ${new Date(e.time).toLocaleTimeString('zh-CN')} · ${e.source === 'me' ? '我' : `对方${e.speakerLabel ? ` · ${e.speakerLabel}` : ''}`} [${e.id}]`, '', `原文：${e.original || '音频未识别成功'}`, '', `中文：${e.chinese || '未生成'}`, '', `英文：${e.english || '未生成'}`, '');
+    if (e.input === 'realtime' && e.status !== 'done') lines.push('> 实时同传暂定结果，尚未完整确认。', '');
     if (e.spokenText) lines.push(`播报用编辑稿：${e.spokenText}`, '');
     if (e.error) lines.push(`处理状态：${e.error}`, '');
   }

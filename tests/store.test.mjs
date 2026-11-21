@@ -7,7 +7,11 @@ test('demo export explicitly identifies sample data and includes source evidence
 });
 test('reload recovers interrupted work as actionable failure rather than infinite spinner', () => {
   const meeting = demoMeeting(); meeting.entries[0].status = 'recognizing';
+  Object.assign(meeting.entries[1], { status: 'live', input: 'realtime', originalConfirmed: false });
+  const partial = meeting.entries[1].original;
   recoverMeeting(meeting); assert.equal(meeting.entries[0].status, 'error'); assert.match(meeting.entries[0].error, /中断/);
+  assert.equal(meeting.entries[1].status, 'error'); assert.equal(meeting.entries[1].original, partial);
+  assert.equal(meeting.entries[1].originalConfirmed, false); assert.match(exportMarkdown(meeting), /暂定结果，尚未完整确认/);
 });
 test('export distinguishes edited spoken text, stale summaries, and capture gaps', () => {
   const meeting = demoMeeting(); meeting.entries[1].spokenText = 'Edited text.'; meeting.summaryCount = 0;

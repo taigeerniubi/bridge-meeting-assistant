@@ -27,6 +27,38 @@ export function downsample(samples, sourceRate, targetRate = 16000) {
   return result;
 }
 
+// Preserve fractional resampling state across worklet frames. Per-frame
+// rounding slowly drops audio samples and makes a long live stream drift.
+export class PcmStreamEncoder {
+  constructor({ sampleRate, targetRate = 16000, frameSamples = 1600, onFrame }) {
+    this.ratio = sampleRate / targetRate; this.remaining = this.ratio; this.sum = 0;
+    this.frame = new ArrayBuffer(frameSamples * 2); this.view = new DataView(this.frame); this.position = 0; this.onFrame = onFrame;
+  }
+  write(value) {
+    const sample = Math.max(-1, Math.min(1, value || 0));
+    this.view.setInt16(this.position * 2, Math.round(sample * (sample < 0 ? 32768 : 32767)), true);
+    if (++this.position * 2 === this.frame.byteLength) { this.position = 0; this.onFrame(this.frame.slice(0)); }
+  }
+  push(samples, muted = false) {
+    let power = 0;
+    for (const sample of samples) {
+      power += sample * sample;
+      let weight = 1;
+      while (weight > 1e-9) {
+        const used = Math.min(weight, this.remaining);
+        this.sum += (muted ? 0 : sample) * used; this.remaining -= used; weight -= used;
+        if (this.remaining < 1e-9) { this.write(this.sum / this.ratio); this.remaining = this.ratio; this.sum = 0; }
+      }
+    }
+    return muted ? 0 : Math.sqrt(power / (samples.length || 1));
+  }
+  flush() {
+    if (this.ratio - this.remaining > 1e-9) this.write(this.sum / (this.ratio - this.remaining));
+    if (this.position) this.onFrame(this.frame.slice(0, this.position * 2));
+    this.position = 0; this.sum = 0; this.remaining = this.ratio;
+  }
+}
+
 export class SpeechSegmenter {
   constructor({ sampleRate, onSegment, threshold = 0.012, silenceMs = 650, maxMs = 8000, minVoiceMs = 160 }) {
     Object.assign(this, { sampleRate, onSegment, threshold, silenceMs, maxMs, minVoiceMs });

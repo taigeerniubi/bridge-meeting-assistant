@@ -1,4 +1,5 @@
 import { AudioCapture, base64Audio } from './capture.mjs';
+import { RealtimeCapture, PcmStreamPlayer } from './live.mjs';
 import { createMeeting, demoMeeting, defaultGlossary, recoverMeeting, exportMarkdown } from './store.mjs';
 
 const $ = selector => document.querySelector(selector);
@@ -11,11 +12,30 @@ let glossary = read('bridge.glossary', defaultGlossary);
 let preferences = read('bridge.preferences', { microphone: '', output: '', micSource: 'me', accent: 'en-US' });
 let meeting = meetings.find(m => m.id === read('bridge.active', '')) || meetings[0];
 if (!meeting) { meeting = createMeeting(); meetings.unshift(meeting); }
-let config, csrf, language = 'both', editingId, summaryBusy = false, ending = false;
+let config, csrf, liveAvailable = false, language = 'both', editingId, summaryBusy = false, ending = false;
 let pending = 0, captureStops = 0, toastTimer, storageFailed = false;
 const captures = new Map(), starting = new Set(), laneQueues = new Map(), audioBuffers = new Map();
 const jobs = new Set();
 let speechQueue = [], speaking = false, playbackActive = false, speechGeneration = 0, speechAbort, currentAudio, cancelPlayback, playbackGap;
+let liveSpeaking = false;
+let liveRenderTimer, liveSaveTimer;
+const liveMode = () => preferences.captureMode !== 'utterance';
+const hasLiveDraft = () => meeting.entries.some(entry => entry.status === 'live');
+const livePlayer = new PcmStreamPlayer({ onActivity: active => {
+  liveSpeaking = active;
+  $('#stop-speech').disabled = !active && !speaking;
+  $('#playback-status').textContent = active ? '正在播放实时英文 · 可以继续说话' : $('#autoplay').checked ? '等待后续实时英文' : '实时英文播放已关闭';
+  updateActivity();
+} });
+
+function updateLiveView(final = false) {
+  if (final) {
+    clearTimeout(liveRenderTimer); clearTimeout(liveSaveTimer); liveRenderTimer = liveSaveTimer = null;
+    save(); renderTranscript(); renderSummary(); return;
+  }
+  liveRenderTimer ||= setTimeout(() => { liveRenderTimer = null; renderTranscript(); }, 100);
+  liveSaveTimer ||= setTimeout(() => { liveSaveTimer = null; save(); }, 400);
+}
 
 function toast(message, error = false) {
   const element = $('#toast'); element.textContent = message; element.classList.toggle('error', error); element.hidden = false;
@@ -58,17 +78,20 @@ async function bootstrap() {
     const data = await response.json();
     if (data.locked) { $('#unlock-dialog').showModal(); return; }
     if (!response.ok) throw new Error(data.error || '无法连接本机服务。');
-    config = data.config; csrf = data.csrf;
+    config = data.config; csrf = data.csrf; liveAvailable = data.capabilities?.liveTranslation === true;
     $('#test-notice').hidden = !data.testMode;
     renderService();
   } catch (error) { $('#service-status').textContent = '服务未连接'; toast(error.message, true); }
 }
 
 function renderService() {
-  const ready = ['asr', 'text', 'speech'].every(hasService);
+  const ready = liveMode() ? liveAvailable && config?.providers.qwen.configured : ['asr', 'text', 'speech'].every(hasService);
   $('#service-status').textContent = ready ? '服务已配置' : '服务待配置';
   $('#service-status').classList.toggle('ready', ready);
   $('#setup-notice').hidden = ready || meeting.demo;
+  const provider = config?.providers[liveMode() ? 'qwen' : config.routing.speech];
+  const voice = liveMode() ? provider?.liveVoice : provider?.voice;
+  $('#voice-description').textContent = voice === 'Aiden' ? 'Aiden · 艾登，美式男声。可在设置中更换音色。' : voice ? `当前音色：${voice}。Qwen 口音由音色决定；OpenAI 可提示英美口音。` : '可在服务设置中选择英文音色。';
 }
 
 function renderHistory() {
@@ -86,8 +109,8 @@ function renderTranscript(scroll = false) {
     container.innerHTML = meeting.entries.map(e => {
       const successful = e.status === 'done';
       const status = { queued: '等待处理…', recognizing: '正在识别语音…', translating: '正在翻译…' }[e.status];
-      const content = successful ? `<div class="chinese">${esc(e.chinese)}</div>${language === 'both' ? `<div class="english" lang="en">${esc(e.spokenText || e.english)}</div>` : ''}` : e.status === 'error' ? `<div class="entry-error">${esc(e.error)}</div>${e.original ? `<div class="original-text">${esc(e.original)}</div>` : ''}` : `<div class="pending">${status || '处理中…'}</div>${e.original ? `<div class="original-text">${esc(e.original)}</div>` : ''}`;
-      return `<article class="entry ${e.source === 'me' ? 'me' : 'remote'}" id="entry-${esc(e.id)}"><div class="speaker-avatar">${e.source === 'me' ? '我' : 'EN'}</div><div class="entry-content"><div class="entry-meta"><b>${e.source === 'me' ? '我的发言' : '对方发言'}</b><time>${time(e.time)}</time><span class="entry-origin">${meeting.demo ? '示例' : e.input === 'audio' ? '音频' : '文字'}</span></div><div class="translation">${content}</div><div class="entry-tools">${successful && e.source === 'me' ? `<button class="text-button" data-play="${esc(e.id)}">▷ 播放英文</button><button class="text-button" data-edit="${esc(e.id)}">编辑后播放</button>` : ''}${successful ? `<button class="text-button" data-copy="${esc(e.id)}">复制${e.source === 'me' ? '英文' : '中文'}</button><details><summary>原文</summary><div class="original-text">${esc(e.original)}</div></details>` : ''}${e.status === 'error' ? `<button class="text-button" data-retry="${esc(e.id)}">重试</button>` : ''}${e.uncertain ? '<span class="uncertain">有歧义，请核对原文</span>' : ''}${e.elapsed && !meeting.demo ? `<span>${e.elapsed.toFixed(1)}s 处理</span>` : ''}</div></div></article>`;
+      const content = e.input === 'realtime' ? `<div class="live-entry-status">${e.status === 'live' ? '实时更新 · 暂定内容会继续修正' : successful ? '同传已完成' : '同传中断 · 以下为已收到的内容'}</div><div class="chinese">${esc(e.chinese || (e.source === 'remote' ? '正在翻译…' : '正在识别…'))}</div>${language === 'both' ? `<div class="english" lang="en">${esc(e.spokenText || e.english || (e.source === 'me' ? '正在翻译…' : '正在识别…'))}</div>` : ''}${e.error ? `<div class="entry-error">${esc(e.error)}</div>` : ''}` : successful ? `<div class="chinese">${esc(e.chinese)}</div>${language === 'both' ? `<div class="english" lang="en">${esc(e.spokenText || e.english)}</div>` : ''}` : e.status === 'error' ? `<div class="entry-error">${esc(e.error)}</div>${e.original ? `<div class="original-text">${esc(e.original)}</div>` : ''}` : `<div class="pending">${status || '处理中…'}</div>${e.original ? `<div class="original-text">${esc(e.original)}</div>` : ''}`;
+      return `<article class="entry ${e.source === 'me' ? 'me' : 'remote'}" id="entry-${esc(e.id)}"><div class="speaker-avatar">${e.source === 'me' ? '我' : 'EN'}</div><div class="entry-content"><div class="entry-meta"><b>${e.source === 'me' ? '我的发言' : `对方${e.speakerLabel ? ` · ${esc(e.speakerLabel)}` : '发言'}`}</b><time>${time(e.time)}</time><span class="entry-origin">${meeting.demo ? '示例' : e.input === 'realtime' ? '实时音频' : e.input === 'audio' ? '音频' : '文字'}</span></div><div class="translation">${content}</div><div class="entry-tools">${successful && e.source === 'me' ? `<button class="text-button" data-play="${esc(e.id)}">▷ 播放英文</button><button class="text-button" data-edit="${esc(e.id)}">编辑后播放</button>` : ''}${successful ? `<button class="text-button" data-copy="${esc(e.id)}">复制${e.source === 'me' ? '英文' : '中文'}</button><details><summary>原文</summary><div class="original-text">${esc(e.original)}</div></details>` : ''}${e.status === 'error' ? `<button class="text-button" data-retry="${esc(e.id)}">重试</button>` : ''}${e.uncertain ? '<span class="uncertain">有歧义，请核对原文</span>' : ''}${e.elapsed && !meeting.demo ? `<span>${e.elapsed.toFixed(1)}s 处理</span>` : ''}</div></div></article>`;
     }).join('');
   }
   $('#entry-count').textContent = `${meeting.entries.length} 条`;
@@ -116,23 +139,24 @@ function renderMeeting() {
   $('#meeting-title').value = meeting.title;
   $('#meeting-date').textContent = new Date(meeting.createdAt).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' });
   $('#demo-notice').hidden = !meeting.demo;
-  $('#autoplay').checked = false;
+  $('#autoplay').checked = liveMode();
   renderService(); renderHistory(); renderTranscript(); renderSummary(); updateActivity();
 }
 
 function updateActivity() {
   $('#live-mark').classList.toggle('on', captures.size > 0);
-  $('#queue-status').textContent = meeting.demo ? '预置示例 · 非实时识别' : pending ? `${pending} 条处理中` : speaking ? '语音生成 / 播报中' : captures.size ? '正在听 · 句末自动翻译' : meeting.endedAt ? '会议已结束' : '等待接入音频';
+  $('#queue-status').textContent = meeting.demo ? '预置示例 · 非实时识别' : starting.size ? '正在连接音频与同传服务…' : captureStops ? '正在收取最后的字幕与译文…' : captures.size && liveMode() ? '实时同传中 · 可以连续说话' : pending ? `${pending} 条处理中` : speaking ? '语音生成 / 播报中' : captures.size ? '短句模式 · 停顿后翻译' : meeting.endedAt ? '会议已结束' : '等待接入音频';
+  $('#audio-source-hint').textContent = `${liveMode() ? '实时同传' : '短句模式'} · 麦克风 → ${preferences.micSource === 'remote' ? '对方' : '我'} · 会议音频 → 对方`;
   $('#stop-audio').hidden = captures.size === 0;
   $('#mic-button').classList.toggle('active', captures.has('mic'));
   $('#mic-button').innerHTML = `<span aria-hidden="true">◉</span> ${captures.has('mic') ? '关闭麦克风' : '开启麦克风'}`;
   $('#system-button').textContent = captures.has('system') ? '断开会议音频' : '▣ 接入会议音频';
   $('#finish-button').disabled = ending || summaryBusy || starting.size > 0 || captureStops > 0 || meeting.demo || Boolean(meeting.endedAt);
-  $('#summary-button').disabled = summaryBusy || ending || Boolean(pending) || !meeting.entries.some(e => e.status === 'done');
+  $('#summary-button').disabled = summaryBusy || ending || Boolean(pending) || hasLiveDraft() || !meeting.entries.some(e => e.status === 'done');
   $('#translate-button').disabled = ending || meeting.demo || Boolean(meeting.endedAt);
   $('#text-input').disabled = ending || meeting.demo || Boolean(meeting.endedAt);
-  $('#mic-button').disabled = ending || meeting.demo || Boolean(meeting.endedAt) || starting.has('mic');
-  $('#system-button').disabled = ending || meeting.demo || Boolean(meeting.endedAt) || starting.has('system');
+  $('#mic-button').disabled = ending || meeting.demo || Boolean(meeting.endedAt) || starting.has('mic') || captureStops > 0;
+  $('#system-button').disabled = ending || meeting.demo || Boolean(meeting.endedAt) || starting.has('system') || captureStops > 0;
   $('#autoplay').disabled = meeting.demo || ending || Boolean(meeting.endedAt);
   $('#new-meeting').disabled = ending || summaryBusy;
   $('#finish-button').textContent = ending ? '正在结束…' : meeting.endedAt ? '会议已结束' : '结束并总结';
@@ -162,7 +186,7 @@ function addJob(entry, buffer) {
       const result = await api('/api/translate', { text: entry.original, source: entry.source, glossary: glossarySnapshot, context });
       Object.assign(entry, result, { status: 'done', elapsed: (performance.now() - start) / 1000 });
       audioBuffers.delete(entry.id);
-      if ($('#autoplay').checked && entry.source === 'me' && !result.uncertain && !ending && !target.endedAt && target === meeting) queueSpeech(entry);
+      if (!liveMode() && $('#autoplay').checked && entry.source === 'me' && !result.uncertain && !ending && !target.endedAt && target === meeting) queueSpeech(entry);
     } catch (error) { entry.status = 'error'; entry.error = error.message; }
     finally { pending--; save(); if (target === meeting) { renderTranscript(); renderSummary(); } }
   });
@@ -171,12 +195,14 @@ function addJob(entry, buffer) {
 }
 
 async function toggleCapture(kind) {
+  if (captureStops) return;
   if (captures.has(kind)) {
     const capture = captures.get(kind); captures.delete(kind); captureStops++; updateActivity();
     try { await capture.stop(); } finally { captureStops--; updateActivity(); }
     return;
   }
   if (starting.has(kind) || meeting.demo || meeting.endedAt) return;
+  if (liveMode()) return startLiveCapture(kind);
   try {
     requireService('asr'); requireService('text');
     starting.add(kind); updateActivity();
@@ -200,6 +226,72 @@ async function toggleCapture(kind) {
   finally { starting.delete(kind); updateActivity(); }
 }
 
+async function ensureLiveOutputRouting(kind) {
+  const meActive = preferences.micSource !== 'remote' && (kind === 'mic' || captures.has('mic'));
+  const systemActive = kind === 'system' || captures.has('system');
+  if (!meActive || !systemActive || !$('#autoplay').checked) return;
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const selected = devices.find(device => device.kind === 'audiooutput' && device.deviceId === preferences.output);
+  const defaults = devices.filter(device => device.kind === 'audiooutput' && device.deviceId === 'default');
+  if (!selected || defaults.some(device => device.groupId && device.groupId === selected.groupId)) throw new Error('同时采集会议并播放英文，需要独立的英文输出设备。请在设置中选择 CABLE Input 等虚拟声卡；也可暂时关闭自动播报。');
+}
+
+async function startLiveCapture(kind) {
+  const target = meeting, sessionId = crypto.randomUUID(), entries = new Map(), speakers = new Map();
+  const source = kind === 'system' ? 'remote' : preferences.micSource || 'me';
+  let capture;
+  const markInterrupted = message => {
+    for (const entry of entries.values()) if (entry.status === 'live') { entry.status = 'error'; entry.error = message; }
+    save(); if (target === meeting) { renderTranscript(); renderSummary(); }
+  };
+  try {
+    if (!liveAvailable) throw new Error('本机服务尚未启用实时同传，请关闭并重新启动会议助手。');
+    if (!config?.providers.qwen.configured) { openSettings(); throw new Error('实时同传需要配置 Qwen / 百炼 API Key。'); }
+    if (speaking || speechQueue.length) stopSpeech();
+    starting.add(kind); updateActivity();
+    await ensureLiveOutputRouting(kind);
+    if (source === 'me' && $('#autoplay').checked) await livePlayer.prepare(preferences.output);
+    capture = new RealtimeCapture({ csrf, source, glossary: structuredClone(glossary), audio: source === 'me' && $('#autoplay').checked,
+      onTranscript: result => {
+        if (target !== meeting || (!result.original && !result.translated)) return;
+        let entry = entries.get(result.id);
+        if (!entry) {
+          entry = { id: `${sessionId}-${result.id}`, source, input: 'realtime', time: new Date().toISOString(), status: 'live', original: '' };
+          entries.set(result.id, entry); target.entries.push(entry); renderHistory();
+        }
+        if (Number.isInteger(result.speakerId) && source === 'remote') {
+          if (!speakers.has(result.speakerId)) speakers.set(result.speakerId, speakers.size + 1);
+          entry.speakerLabel = `发言者 ${speakers.get(result.speakerId)}`;
+        }
+        Object.assign(entry, { original: result.original, originalConfirmed: result.originalDone,
+          chinese: source === 'me' ? result.original : result.translated, english: source === 'me' ? result.translated : result.original,
+          status: result.error ? 'error' : result.final ? 'done' : 'live', error: result.error || null });
+        updateLiveView(Boolean(result.final || result.error));
+      },
+      onAudio: result => {
+        if (source !== 'me' || !$('#autoplay').checked || target !== meeting || ending) return;
+        try { livePlayer.push(result.data, result.sampleRate); }
+        catch (error) { $('#autoplay').checked = false; stopSpeech(); toast(error.message, true); }
+      },
+      onLevel: rms => { $(`#level-${source}`).style.height = `${Math.min(18, Math.max(3, rms * 150))}px`; },
+      onEnded: () => { if (captures.get(kind) === capture) captures.delete(kind); markInterrupted('音频已结束，最后一段未完整确认，请核对。'); updateActivity(); },
+      onError: error => {
+        if (captures.get(kind) === capture) captures.delete(kind);
+        markInterrupted(error.message);
+        target.gaps.push({ start: new Date().toISOString(), end: new Date().toISOString(), reason: `${source === 'me' ? '麦克风' : '会议音频'}实时连接中断：${error.message}` });
+        save(); updateActivity(); toast(error.message, true);
+      },
+    });
+    captures.set(kind, capture); updateActivity();
+    await capture.start(kind, preferences.microphone);
+    if (target !== meeting || ending || target.endedAt || capture.stopping || capture.failed) { await capture.stop(); if (captures.get(kind) === capture) captures.delete(kind); return; }
+    toast(`${source === 'me' ? '我的发言' : '对方发言'}已接入实时同传，可以连续说话。`);
+  } catch (error) {
+    if (captures.get(kind) === capture) captures.delete(kind);
+    markInterrupted(error.message); toast(error.message, true);
+  } finally { starting.delete(kind); updateActivity(); }
+}
+
 async function stopCapture() {
   const active = [...captures.values()]; captures.clear();
   captureStops += active.length; updateActivity();
@@ -219,6 +311,7 @@ function setPlaybackGate(blocked) {
 }
 
 function queueSpeech(entry) {
+  if ([...captures.values()].some(capture => capture.live)) { toast('实时同传中，请使用自动播报；停止采集后可重播历史译文。'); return; }
   try { requireService('speech'); } catch (error) { toast(error.message, true); return; }
   if (speechQueue.length >= 8) { $('#autoplay').checked = false; toast('待播报内容较多，已关闭自动播报。请等待或停止播放。', true); return; }
   if (speechQueue.some(item => item.entryId === entry.id)) return;
@@ -268,13 +361,15 @@ async function drainSpeech() {
 }
 
 function stopSpeech() {
+  livePlayer.stop();
+  for (const capture of captures.values()) if (capture.live) capture.setAudioEnabled(false);
   speechGeneration++; speechQueue = []; speechAbort?.abort(); cancelPlayback?.(); currentAudio?.pause();
   $('#stop-speech').disabled = true; $('#playback-status').textContent = '已停止播放'; setPlaybackGate(false);
 }
 
 async function generateSummary() {
   if (meeting.demo) { renderSummary(); toast('当前展示的是示例纪要。新建会议可生成真实纪要。'); return; }
-  if (pending) { toast('请等待正在处理的发言完成。'); return; }
+  if (pending || hasLiveDraft()) { toast('请等待正在处理的发言完成，或先停止采集收取最后结果。'); return; }
   const entries = meeting.entries.filter(e => e.status === 'done');
   if (!entries.length) { toast('还没有可总结的有效发言。'); return; }
   requireService('text');
@@ -320,7 +415,7 @@ function renderProviderFields() {
   $('#provider-fields').innerHTML = ['openai', 'qwen'].map(name => {
     const provider = config.providers[name];
     const field = (key, title, wide = false) => `<div class="field ${wide ? 'wide' : ''}"><label for="${name}-${key}">${title}</label><input id="${name}-${key}" value="${esc(provider[key])}" autocomplete="off"></div>`;
-    return `<section class="settings-section"><h3>${name === 'openai' ? 'OpenAI' : 'Qwen / 阿里云百炼'}<span class="key-status">${provider.configured ? '密钥已配置' : '尚未配置'}</span></h3><div class="field"><label for="${name}-key">API Key</label><input id="${name}-key" type="password" autocomplete="new-password" placeholder="${provider.configured ? '已配置；留空保留现有密钥' : '在本机填写你的 API Key'}"></div><details><summary>模型、音色和服务地址</summary><div class="advanced-fields">${field('baseUrl', 'API Base URL', true)}${name === 'qwen' ? field('ttsUrl', '语音合成完整 URL（与密钥地域一致）', true) : ''}${field('asrModel', '识别模型')}${field('textModel', '翻译模型')}${field('speechModel', '语音模型')}${field('voice', '音色')}</div><button type="button" class="text-button danger" data-clear-key="${name}">清除这家的密钥</button></details></section>`;
+    return `<section class="settings-section"><h3>${name === 'openai' ? 'OpenAI' : 'Qwen / 阿里云百炼'}<span class="key-status">${provider.configured ? '密钥已配置' : '尚未配置'}</span></h3><div class="field"><label for="${name}-key">API Key</label><input id="${name}-key" type="password" autocomplete="new-password" placeholder="${provider.configured ? '已配置；留空保留现有密钥' : '在本机填写你的 API Key'}"></div><details><summary>模型、音色和服务地址</summary><div class="advanced-fields">${field('baseUrl', 'API Base URL', true)}${name === 'qwen' ? field('ttsUrl', '语音合成完整 URL（与密钥地域一致）', true) : ''}${field('asrModel', '识别模型')}${field('textModel', '翻译模型')}${field('speechModel', '语音模型')}${field('voice', '短句语音音色')}${name === 'qwen' ? `${field('liveUrl', '实时同传 WebSocket 地址', true)}${field('liveModel', '实时同传模型', true)}${field('liveVoice', '实时同传音色')}` : ''}</div><button type="button" class="text-button danger" data-clear-key="${name}">清除这家的密钥</button></details></section>`;
   }).join('');
 }
 
@@ -341,22 +436,26 @@ function openSettings() {
   if (!config) { toast('本机服务尚未连接，请刷新页面后重试。', true); return; }
   renderProviderFields();
   for (const stage of ['asr', 'text', 'speech']) $(`#route-${stage}`).value = config.routing[stage];
+  $('#capture-mode').value = liveMode() ? 'realtime' : 'utterance';
   $('#mic-source').value = preferences.micSource || 'me'; $('#settings-error').textContent = '';
   void enumerateDevices().catch(() => {});
   if (!$('#settings-dialog').open) $('#settings-dialog').showModal();
 }
 
 async function saveSettings(close = true) {
+  if (captures.size || starting.size || captureStops) throw new Error('请先停止音频采集，再修改服务或设备设置。');
   const payload = { routing: {}, providers: {} };
   for (const stage of ['asr', 'text', 'speech']) payload.routing[stage] = $(`#route-${stage}`).value;
   for (const name of ['openai', 'qwen']) {
     payload.providers[name] = {};
-    for (const key of ['key', 'baseUrl', 'ttsUrl', 'textModel', 'asrModel', 'speechModel', 'voice']) {
+    for (const key of ['key', 'baseUrl', 'ttsUrl', 'textModel', 'asrModel', 'speechModel', 'voice', 'liveUrl', 'liveModel', 'liveVoice']) {
       const input = $(`#${name}-${key}`); if (input) payload.providers[name][key] = input.value.trim();
     }
   }
   const data = await api('/api/settings', payload); config = data.config;
   preferences.microphone = $('#microphone').value; preferences.output = $('#output-device').value; preferences.micSource = $('#mic-source').value;
+  preferences.captureMode = $('#capture-mode').value; $('#autoplay').checked = liveMode();
+  updateActivity();
   save(); renderService(); renderProviderFields();
   if (close) $('#settings-dialog').close();
 }
@@ -407,9 +506,16 @@ $('#mic-button').addEventListener('click', () => void toggleCapture('mic'));
 $('#system-button').addEventListener('click', () => void toggleCapture('system'));
 $('#stop-audio').addEventListener('click', () => void stopCapture());
 $('#stop-speech').addEventListener('click', () => { $('#autoplay').checked = false; stopSpeech(); });
-$('#autoplay').addEventListener('change', event => {
+$('#autoplay').addEventListener('change', async event => {
   if (event.target.checked) {
-    try { requireService('speech'); toast('自动播报已开启，仅播放后续“我的发言”的英文译文。有歧义的译文仍需手动确认。'); }
+    try {
+      if (liveMode()) {
+        if (!config?.providers.qwen.configured) { openSettings(); throw new Error('请先配置 Qwen 实时同传。'); }
+        await ensureLiveOutputRouting(); await livePlayer.prepare(preferences.output);
+        for (const capture of captures.values()) if (capture.live && capture.source === 'me') capture.setAudioEnabled(true);
+        toast('实时英文播放已开启，后续语音分片会连续播放；你可以继续说话。');
+      } else { requireService('speech'); toast('自动播报已开启，仅播放后续“我的发言”的英文译文。有歧义的译文仍需手动确认。'); }
+    }
     catch (error) { event.target.checked = false; toast(error.message, true); }
   } else stopSpeech();
 });
@@ -448,6 +554,8 @@ $('#transcript').addEventListener('click', async event => {
   if (button.dataset.retry && entry.status === 'error') {
     if (ending) { toast('请等待会议结束操作完成。'); return; }
     if (!entry.original && !audioBuffers.has(entry.id)) { toast('音频未保存，请重新录入。', true); return; }
+    if (entry.input === 'realtime' && !entry.originalConfirmed) { toast('这段同传原文尚未完整确认，请重新录入。', true); return; }
+    if (entry.input === 'realtime') entry.input = 'text';
     addJob(entry);
   }
 });
@@ -474,7 +582,7 @@ $('#glossary-form').addEventListener('submit', event => {
   save(); renderGlossary(); event.target.reset(); toast(existing ? '术语已更新。' : '术语已加入。');
 });
 $('#glossary-list').addEventListener('click', event => { const button = event.target.closest('[data-delete-term]'); if (!button) return; glossary.splice(Number(button.dataset.deleteTerm), 1); save(); renderGlossary(); });
-window.addEventListener('beforeunload', event => { if (captures.size || starting.size || captureStops || pending || speaking) { event.preventDefault(); event.returnValue = ''; } });
+window.addEventListener('beforeunload', event => { if (captures.size || starting.size || captureStops || pending || speaking || liveSpeaking) { event.preventDefault(); event.returnValue = ''; } });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden && captures.size && /Android|iPhone|iPad/.test(navigator.userAgent)) toast('手机切到后台或锁屏可能中断录音，请保持页面在前台。', true);
 });

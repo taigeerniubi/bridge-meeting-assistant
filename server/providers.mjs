@@ -2,6 +2,10 @@ import WebSocket from 'ws';
 import { pcmToWav } from '../public/audio-core.mjs';
 import { glossaryText } from './prompts.mjs';
 
+// Some Qwen ASR deployments reject system context. Remember a successful
+// audio-only fallback until provider settings are replaced by updateConfig.
+const qwenAsrAudioOnly = new WeakSet();
+
 export class ServiceError extends Error {
   constructor(message, status = 502) { super(message); this.status = status; }
 }
@@ -40,7 +44,9 @@ async function request(url, { key, body, signal, fetchImpl = fetch, headers = {}
     const data = await response.json().catch(() => ({}));
     const detail = String(data.error?.message || data.message || '').slice(0, 300);
     const reason = response.status === 401 ? 'API Key 无效或与地域不匹配' : response.status === 429 ? '额度不足或请求过于频繁' : response.status === 403 ? '没有该模型的使用权限' : '模型服务返回错误';
-    throw new ServiceError(`${reason}（${response.status}）${detail ? `：${detail}` : ''}`, response.status === 429 ? 429 : 502);
+    const error = new ServiceError(`${reason}（${response.status}）${detail ? `：${detail}` : ''}`, response.status === 429 ? 429 : 502);
+    error.upstreamStatus = response.status;
+    throw error;
   }
   return response;
 }
@@ -75,6 +81,7 @@ export async function generateJson(config, messages, kind, { signal, fetchImpl =
 
 export async function transcribe(config, audio, glossary, options = {}) {
   const provider = selected(config, 'asr');
+  const providerSettings = config.providers[config.routing.asr];
   const bytes = Buffer.from(audio, 'base64');
   if (bytes.length < 44 || bytes.length > 5_000_000 || bytes.toString('ascii', 0, 4) !== 'RIFF' || bytes.toString('ascii', 8, 12) !== 'WAVE') throw new ServiceError('请提交有效的短句 WAV 音频。', 400);
   let body;
@@ -91,16 +98,30 @@ export async function transcribe(config, audio, glossary, options = {}) {
     body = {
       model: provider.asrModel,
       messages: [
-        ...(terms ? [{ role: 'system', content: terms.slice(0, 3500) }] : []),
+        ...(terms && !qwenAsrAudioOnly.has(providerSettings) ? [{ role: 'system', content: terms.slice(0, 3500) }] : []),
         { role: 'user', content: [{ type: 'input_audio', input_audio: { data: `data:audio/wav;base64,${audio}` } }] },
       ],
       stream: false, asr_options: { enable_itn: false },
     };
   }
-  const response = await request(provider.baseUrl + endpoint, { ...options, key: provider.key, body });
+  let response;
+  let usedAudioOnlyFallback = false;
+  try {
+    response = await request(provider.baseUrl + endpoint, { ...options, key: provider.key, body });
+  } catch (error) {
+    const rejectedContext = provider.name === 'qwen' && body.messages[0]?.role === 'system'
+      && error.upstreamStatus === 400 && /dedicated task [`'"]?asr[`'"]? .*does not support this input/i.test(error.message);
+    if (!rejectedContext || options.signal?.aborted) throw error;
+    // Retry only this known context incompatibility, preserving the original
+    // audio and multilingual ASR options. Other provider errors remain visible.
+    body = { ...body, messages: body.messages.filter(message => message.role !== 'system') };
+    response = await request(provider.baseUrl + endpoint, { ...options, key: provider.key, body });
+    usedAudioOnlyFallback = true;
+  }
   const data = await response.json();
   const text = provider.name === 'openai' ? data.text : data.choices?.[0]?.message?.content;
   if (typeof text !== 'string') throw new ServiceError('语音服务没有返回有效文字。');
+  if (usedAudioOnlyFallback) qwenAsrAudioOnly.add(providerSettings);
   return { text: text.trim() };
 }
 

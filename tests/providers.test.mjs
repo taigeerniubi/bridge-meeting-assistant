@@ -18,6 +18,75 @@ test('Qwen recognition sends original WAV and code-switching without forcing one
   } });
   assert.equal(result.text, '这个 API timeout 是 3 秒。');
 });
+
+const unsupportedAsrInput = () => new Response(JSON.stringify({ error: {
+  code: 'InvalidParameter',
+  message: '<400> InternalError.Algo.InvalidParameter: The dedicated task `asr` corresponding to the current service does not support this input.',
+} }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+test('Qwen ASR retries rejected terminology context once and remembers audio-only mode', async () => {
+  const current = structuredClone(config);
+  const wav = Buffer.from(pcmToWav(new Float32Array(16000))).toString('base64');
+  const glossary = [{ en: 'API', zh: '应用程序接口' }];
+  let calls = 0;
+  const fetchImpl = async (url, options) => {
+    const body = JSON.parse(options.body);
+    calls++;
+    if (calls === 1) {
+      assert.equal(body.messages[0].role, 'system');
+      return unsupportedAsrInput();
+    }
+    assert.deepEqual(body.messages, [{ role: 'user', content: [{ type: 'input_audio', input_audio: { data: `data:audio/wav;base64,${wav}` } }] }]);
+    assert.equal(body.asr_options.language, undefined);
+    return json({ choices: [{ message: { content: 'The API timeout is three seconds.' } }] });
+  };
+  const result = await transcribe(current, wav, glossary, { fetchImpl });
+  assert.equal(result.text, 'The API timeout is three seconds.');
+  assert.equal(calls, 2);
+  await transcribe(current, wav, glossary, { fetchImpl });
+  assert.equal(calls, 3, 'later utterances must not repeatedly send rejected context');
+
+  const updated = structuredClone(current);
+  await transcribe(updated, wav, glossary, { fetchImpl: async (url, options) => {
+    assert.equal(JSON.parse(options.body).messages[0].role, 'system', 'saving provider settings should allow context support to be checked again');
+    return json({ choices: [{ message: { content: 'API' } }] });
+  } });
+});
+
+test('Qwen ASR does not retry unrelated provider errors or audio-only input errors', async () => {
+  const wav = Buffer.from(pcmToWav(new Float32Array(16000))).toString('base64');
+  for (const status of [400, 401, 429]) {
+    let calls = 0;
+    await assert.rejects(transcribe(structuredClone(config), wav, [{ en: 'API', zh: '接口' }], { fetchImpl: async () => {
+      calls++;
+      return new Response(JSON.stringify({ error: { message: 'Invalid audio or credentials' } }), { status });
+    } }), /Invalid audio or credentials/);
+    assert.equal(calls, 1);
+  }
+  let calls = 0;
+  await assert.rejects(transcribe(structuredClone(config), wav, [], { fetchImpl: async () => {
+    calls++;
+    return unsupportedAsrInput();
+  } }), /does not support this input/);
+  assert.equal(calls, 1);
+});
+
+test('Qwen ASR reports a failed audio-only retry and does not cache it as success', async () => {
+  const current = structuredClone(config);
+  const wav = Buffer.from(pcmToWav(new Float32Array(16000))).toString('base64');
+  const glossary = [{ en: 'API', zh: '接口' }];
+  let calls = 0;
+  await assert.rejects(transcribe(current, wav, glossary, { fetchImpl: async () => {
+    calls++;
+    return unsupportedAsrInput();
+  } }), /does not support this input/);
+  assert.equal(calls, 2);
+  await transcribe(current, wav, glossary, { fetchImpl: async (url, options) => {
+    assert.equal(JSON.parse(options.body).messages[0].role, 'system');
+    return json({ choices: [{ message: { content: 'API' } }] });
+  } });
+});
+
 test('OpenAI transcription uses multipart file transcription endpoint', async () => {
   const current = structuredClone(config); current.routing.asr = 'openai';
   const wav = Buffer.from(pcmToWav(new Float32Array(1000))).toString('base64');

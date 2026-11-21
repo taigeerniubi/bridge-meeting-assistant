@@ -1,0 +1,17 @@
+{
+  "name": "bridge-meeting-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "description": "中英 IT 会议助手：双路音频、翻译、英文播报与会议纪要",
+  "type": "module",
+  "main": "desktop/main.cjs",
+  "engines": { "node": ">=22.0.0" },
+  "scripts": {
+    "start": "node server/index.mjs",
+    "desktop": "electron .",
+    "test": "node --test tests/*.test.mjs",
+    "check": "node scripts/check.mjs"
+  },
+  "dependencies": { "ws": "8.23.0" },
+  "devDependencies": { "electron": "45.4.1" }
+}

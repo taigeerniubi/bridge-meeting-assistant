@@ -47,7 +47,7 @@ export function createSettingsStore(file, { crypt = windowsProtect } = {}) {
           saved.providers[name].clearKey = saved.providers[name].key === '';
         }
         return updateConfig(defaults, saved);
-      } catch { throw new Error('已保存的服务设置无法读取或解密，请使用原 Windows 账户，或移走 .local/service-settings.dpapi 后重新配置。'); }
+      } catch { throw new Error('已保存的服务设置无法读取或解密，请使用原 Windows 账户，或移走数据目录中的 service-settings.dpapi 后重新配置。'); }
     },
     async save(config) {
       const temporary = `${file}.${randomUUID()}.tmp`;
@@ -56,7 +56,7 @@ export function createSettingsStore(file, { crypt = windowsProtect } = {}) {
         await mkdir(dirname(file), { recursive: true });
         await writeFile(temporary, JSON.stringify({ version: 1, protection: 'windows-dpapi-current-user', data }), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
         await rename(temporary, file);
-      } catch { throw new Error('服务设置未保存成功，请检查本机加密服务及项目目录的写入权限后重试。'); }
+      } catch { throw new Error('服务设置未保存成功，请检查本机加密服务及数据目录的写入权限后重试。'); }
       finally { await rm(temporary, { force: true }).catch(() => {}); }
     },
   };

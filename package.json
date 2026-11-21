@@ -5,13 +5,41 @@
   "description": "中英 IT 会议助手：双路音频、翻译、英文播报与会议纪要",
   "type": "module",
   "main": "desktop/main.cjs",
-  "engines": { "node": ">=22.0.0" },
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "start": "node server/index.mjs",
     "desktop": "electron .",
+    "build:portable": "npm run check && electron scripts/build-icon.cjs && electron-builder --win portable --x64 --publish never",
     "test": "node --test tests/*.test.mjs",
     "check": "node scripts/check.mjs"
   },
-  "dependencies": { "ws": "8.23.0" },
-  "devDependencies": { "electron": "45.4.1" }
+  "dependencies": {
+    "ws": "8.23.0"
+  },
+  "devDependencies": {
+    "electron": "45.4.1",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "local.bridge.meeting-assistant",
+    "productName": "译桥",
+    "directories": { "output": "release", "buildResources": "build" },
+    "files": ["desktop/**", "server/**", "public/**", "package.json"],
+    "asar": true,
+    "electronDist": "node_modules/electron/dist",
+    "npmRebuild": false,
+    "win": {
+      "target": [{ "target": "portable", "arch": ["x64"] }],
+      "executableName": "BridgeMeeting",
+      "icon": "build/icon.ico",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "portable": {
+      "artifactName": "译桥-免安装-${version}-${arch}.exe",
+      "requestExecutionLevel": "user",
+      "unpackDirName": false
+    }
+  }
 }

@@ -6,6 +6,27 @@
 
 ## 启动
 
+### Windows 免安装版
+
+双击 `release/译桥-免安装-0.1.0-x64.exe` 即可运行，不需要安装 Node.js 或其他运行环境。面向 Windows x64，首次打开会在临时目录展开内置运行环境。
+
+配置和会议记录保存到 **EXE 同目录的 `译桥数据/`**，其中 `service-settings.dpapi` 保存加密服务设置，`desktop-profile/` 保存会议历史、术语和界面偏好。重启或替换新版 EXE 不会清除这些数据；移动程序时将这个文件夹一并移动。加密 Key 仍绑定保存时的 Windows 账户，换电脑或账户后需要重新配置。
+
+EXE 本身不包含 API Key、`.env` 或个人会议记录。重复打开同一份便携版会切回已有窗口。源码版和便携版默认使用同一个本机端口 `4319`，请先关闭源码版，再运行便携版。
+
+从源码重新生成免安装 EXE：
+
+```powershell
+npm ci
+npm run build:portable
+```
+
+构建后可运行 `node scripts/check-portable.mjs`。它在独立测试目录实际启动 EXE，验证中文路径、双语界面、加密设置和会议历史在重启后保留，以及重复打开只保留一个窗口；只使用测试 Key，不采集音频或调用云端 API。
+
+构建只打包应用代码和运行依赖，不复制本机配置。已有源码版数据可在关闭应用后，将 `.local/service-settings.dpapi` 和 `.local/desktop-profile/` 分别复制到 `release/译桥数据/` 下。请保留原文件作为备份，不要覆盖另一份已有会议数据。
+
+### 从源码启动
+
 需要 Node.js 22 或更高版本。项目已安装依赖时可以直接启动。
 
 ```powershell

@@ -2,20 +2,30 @@ const { app, BrowserWindow, session, desktopCapturer, dialog } = require('electr
 const path = require('node:path');
 const fs = require('node:fs');
 const { pathToFileURL } = require('node:url');
+const { desktopPaths } = require('./paths.cjs');
 
-// Keep the desktop profile within the local project; no credentials are stored here.
-const profile = path.join(__dirname, '..', '.local', 'desktop-profile');
+const { dataDirectory, profile, envFile } = desktopPaths({
+  isPackaged: app.isPackaged, projectRoot: path.join(__dirname, '..'),
+  execPath: process.execPath, portableDirectory: process.env.PORTABLE_EXECUTABLE_DIR,
+});
 fs.mkdirSync(profile, { recursive: true });
 app.setPath('userData', profile);
-let server;
+app.setAppUserModelId('local.bridge.meeting-assistant');
+let server, win;
+const primaryInstance = app.requestSingleInstanceLock();
+if (!primaryInstance) app.quit();
+app.on('second-instance', () => {
+  if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+});
+if (primaryInstance) {
 app.whenReady().then(async () => {
   const { startServer } = await import(pathToFileURL(path.join(__dirname, '..', 'server', 'index.mjs')).href);
   // A stable origin keeps meeting history available across desktop restarts.
-  const result = await startServer({ port: Number(process.env.DESKTOP_PORT || 4319), host: '127.0.0.1', desktop: true });
+  const result = await startServer({ port: Number(process.env.DESKTOP_PORT || 4319), host: '127.0.0.1', desktop: true, dataDirectory, envFile });
   server = result.server;
   const origin = new URL(result.url).origin;
   const trusted = value => { try { return new URL(value).origin === origin; } catch { return false; } };
-  const win = new BrowserWindow({
+  win = new BrowserWindow({
     width: 1440, height: 940, minWidth: 860, minHeight: 640, title: '译桥 · IT 会议助手', backgroundColor: '#f6f8fb',
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
@@ -38,3 +48,4 @@ app.whenReady().then(async () => {
   await win.loadURL(result.url);
 }).catch(error => { dialog.showErrorBox('启动失败', error.message); app.quit(); });
 app.on('window-all-closed', () => { server?.close(); app.quit(); });
+}

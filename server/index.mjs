@@ -131,8 +131,11 @@ export function createHandler({ config = initialConfig(), accessToken = '', publ
   return handler;
 }
 
-export async function startServer({ port, host, env = process.env, desktop = false, settingsStore = process.platform === 'win32' ? createSettingsStore(resolve(root, '.local/service-settings.dpapi')) : null } = {}) {
-  try { process.loadEnvFile(resolve(root, '.env')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+export async function startServer({ port, host, env = process.env, desktop = false,
+  dataDirectory = resolve(root, '.local'), envFile = resolve(root, '.env'),
+  settingsStore = process.platform === 'win32' ? createSettingsStore(resolve(dataDirectory, 'service-settings.dpapi')) : null,
+} = {}) {
+  try { process.loadEnvFile(envFile); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (desktop) env = { ...env, PUBLIC_ORIGIN: '', ACCESS_TOKEN: '', TLS_CERT: '', TLS_KEY: '' };
   host ??= env.HOST || '127.0.0.1';
   port ??= Number(env.PORT || 4318);

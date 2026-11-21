@@ -6,3 +6,6 @@ node_modules/
 *.log
 certs/
 coverage/
+release/
+build/icon.ico
+build/icon.png

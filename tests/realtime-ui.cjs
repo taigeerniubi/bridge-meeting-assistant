@@ -22,7 +22,9 @@ async function waitFor(check, label) {
 app.whenReady().then(async () => {
   const { createHandler } = await import(pathToFileURL(path.join(root, 'server/index.mjs')));
   const { initialConfig } = await import(pathToFileURL(path.join(root, 'server/config.mjs')));
-  handler = createHandler({ testMode: true, config: initialConfig({ DASHSCOPE_API_KEY: 'ui-fixture-only' }), liveSocketFactory: () => {
+  const { createSettingsStore } = await import(pathToFileURL(path.join(root, 'server/settings-store.mjs')));
+  const settingsStore = process.platform === 'win32' ? createSettingsStore(path.join(out, `settings-${process.pid}.dpapi`)) : undefined;
+  handler = createHandler({ testMode: true, settingsStore, config: initialConfig({ DASHSCOPE_API_KEY: 'ui-fixture-only' }), liveSocketFactory: () => {
     const socket = new EventEmitter(); socket.readyState = 1; socket.bufferedAmount = 0; socket.frames = 0;
     socket.feed = value => socket.emit('message', JSON.stringify(value));
     socket.close = socket.terminate = () => { if (socket.readyState === 3) return; socket.readyState = 3; socket.emit('close'); };
@@ -82,7 +84,12 @@ app.whenReady().then(async () => {
   assert.equal(await win.webContents.executeJavaScript("document.querySelector('#qwen-liveModel').value"), 'qwen3.8-livetranslate-flash-realtime');
   assert.equal(await win.webContents.executeJavaScript("document.querySelector('#qwen-liveVoice').value"), 'Aiden');
   assert.equal(await win.webContents.executeJavaScript("document.querySelector('#qwen-voice').value"), 'Aiden');
-  await win.webContents.executeJavaScript("document.querySelector('#close-settings').click()", true);
+  if (settingsStore) {
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('#settings-storage-note').textContent.includes('重启自动恢复')"), true);
+    await win.webContents.executeJavaScript("document.querySelector('#settings-form button[type=submit]').click()", true);
+    await waitFor(() => win.webContents.executeJavaScript("!document.querySelector('#settings-dialog').open"), 'persist settings from UI');
+    assert.equal((await settingsStore.load(initialConfig({}))).providers.qwen.key, 'ui-fixture-only');
+  } else await win.webContents.executeJavaScript("document.querySelector('#close-settings').click()", true);
   win.setSize(1000, 760);
   await delay(100);
   fs.writeFileSync(path.join(out, 'complete.png'), (await win.webContents.capturePage()).toPNG());

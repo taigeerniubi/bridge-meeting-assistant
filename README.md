@@ -35,7 +35,9 @@ npm start
 
 「短句翻译」以及文字输入、历史译文重播、会议总结仍使用下面的服务商配置，可全部选 Qwen、全部选 OpenAI，也可混用。点击「测试翻译连接」只调用一次真实短文本翻译，产生相应 API 费用；它不验证实时同传或语音权限。
 
-界面输入的密钥只保留在本机 Node 服务内存中，不写入浏览器存储，不在接口响应中返回。重启服务后需重新输入。如需重启后仍有效，在本机将 `.env.example` 复制为 `.env` 并填写；`.env` 已加入 `.gitignore`，请勿分享此文件。
+**Windows 上只需输入并保存一次 Key，之后重启会自动恢复。** 服务商、模型、地址、音色和 Key 一起保存在项目 `.local/service-settings.dpapi`，使用 Windows 当前用户加密；只有相同 Windows 账户可以解密。桌面版与同一项目的浏览器版共用此服务配置，会议历史仍分别保存。密钥不写入浏览器存储，不在接口响应中返回，加密文件已被 Git 忽略。保存失败会明确提示，不会假装保存成功。
+
+Key 输入框留空表示保留已有 Key；点击「清除这家的密钥」会同步更新本机保存项，重启后仍为空。`.env` 可提供初始配置，界面已保存的配置优先（包括清除 Key 的结果）。如果需要重新从 `.env` 初始化，先关闭应用，再移走 `.local/service-settings.dpapi`。非 Windows 环境暂不提供界面配置的加密保存，可在本机复制 `.env.example` 为 `.env` 后填写。`.env` 同样被 Git 忽略。[Windows 用户范围的数据保护](https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.dataprotectionscope)
 
 | 能力 | OpenAI 默认模型 / 接口 | Qwen 默认模型 / 接口 |
 | --- | --- | --- |

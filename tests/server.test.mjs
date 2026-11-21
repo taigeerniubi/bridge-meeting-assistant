@@ -71,6 +71,23 @@ test('settings accept independent routes and never echo a newly submitted key', 
   assert.equal(JSON.stringify(data).includes('private-qwen-placeholder'), false);
   assert.equal((await fetch(url + '/api/bootstrap').then(r => r.text())).includes('private-qwen-placeholder'), false);
 });
+
+test('persistence failure keeps active settings unchanged and concurrent saves retain both updates', async t => {
+  let fail = true; const snapshots = [];
+  const { post, url } = await fixture(t, { settingsStore: { async save(config) {
+    if (fail) throw new Error('Cannot save settings');
+    await new Promise(resolve => setTimeout(resolve, 10)); snapshots.push(structuredClone(config));
+  } } });
+  assert.equal((await post('/api/settings', { providers: { qwen: { key: 'not-saved-key' } } })).status, 500);
+  assert.equal((await (await fetch(url + '/api/bootstrap')).json()).config.providers.qwen.configured, false);
+  fail = false;
+  const results = await Promise.all([
+    post('/api/settings', { providers: { qwen: { key: 'saved-key-only' } } }),
+    post('/api/settings', { providers: { openai: { voice: 'ash' } } }),
+  ]);
+  assert.ok(results.every(result => result.status === 200)); assert.equal(snapshots.length, 2);
+  const final = snapshots.at(-1); assert.equal(final.providers.qwen.key, 'saved-key-only'); assert.equal(final.providers.openai.voice, 'ash');
+});
 test('LAN access requires password and issues an HttpOnly session cookie', async t => {
   const { url, post } = await fixture(t, { accessToken: 'local-test-password' });
   assert.equal((await fetch(url + '/api/bootstrap')).status, 401);

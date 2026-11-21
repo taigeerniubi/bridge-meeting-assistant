@@ -8,6 +8,7 @@ import { initialConfig, publicConfig, updateConfig } from './config.mjs';
 import { generateJson, transcribe, synthesize, ServiceError } from './providers.mjs';
 import { translationMessages, summaryMessages, validateSummary } from './prompts.mjs';
 import { createLiveGateway } from './live-translation.mjs';
+import { createSettingsStore } from './settings-store.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const types = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json' };
@@ -25,8 +26,9 @@ async function jsonBody(req) {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw new ServiceError('JSON 格式不正确。', 400); }
 }
 
-export function createHandler({ config = initialConfig(), accessToken = '', publicOrigin = '', services = {}, testMode = false, liveSocketFactory } = {}) {
+export function createHandler({ config = initialConfig(), accessToken = '', publicOrigin = '', services = {}, testMode = false, liveSocketFactory, settingsStore } = {}) {
   let settings = config;
+  let settingsWrites = Promise.resolve();
   const csrf = randomBytes(32).toString('hex');
   const authCookie = randomBytes(32).toString('hex');
   const service = { generateJson, transcribe, synthesize, ...services };
@@ -57,13 +59,22 @@ export function createHandler({ config = initialConfig(), accessToken = '', publ
       const authorized = !accessToken || req.headers.cookie?.split(';').some(item => item.trim() === `bridge_auth=${authCookie}`);
       if (url.pathname.startsWith('/api/')) {
         if (!authorized) return send(401, { error: '请先输入访问密码。', locked: true });
-        if (req.method === 'GET' && url.pathname === '/api/bootstrap') return send(200, { csrf, config: publicConfig(settings), version: '0.1.0', testMode, capabilities: { liveTranslation: true } });
+        if (req.method === 'GET' && url.pathname === '/api/bootstrap') return send(200, { csrf, config: publicConfig(settings), version: '0.1.0', testMode, capabilities: { liveTranslation: true, persistentSettings: Boolean(settingsStore) } });
         if (req.method !== 'POST') return send(405, { error: '不支持此请求方式。' });
         if (!equals(req.headers['x-bridge-token'], csrf)) return send(403, { error: '页面会话已失效，请刷新后重试。' });
         const body = await jsonBody(req);
         if (url.pathname === '/api/settings') {
-          try { settings = updateConfig(settings, body); } catch (error) { throw new ServiceError(error.message, 400); }
-          return send(200, { config: publicConfig(settings) });
+          const write = settingsWrites.then(async () => {
+            let next;
+            try { next = updateConfig(settings, body); } catch (error) { throw new ServiceError(error.message, 400); }
+            // Report success only after the encrypted snapshot is durable.
+            // On failure the active settings retain their previous values.
+            if (settingsStore) await settingsStore.save(next);
+            settings = next;
+            return { config: publicConfig(settings), persistent: Boolean(settingsStore) };
+          });
+          settingsWrites = write.catch(() => {});
+          return send(200, await write);
         }
         if (inFlight >= 6) return send(429, { error: '正在处理的请求较多，请稍后重试。' });
         inFlight++; counted = true;
@@ -120,14 +131,15 @@ export function createHandler({ config = initialConfig(), accessToken = '', publ
   return handler;
 }
 
-export async function startServer({ port, host, env = process.env, desktop = false } = {}) {
+export async function startServer({ port, host, env = process.env, desktop = false, settingsStore = process.platform === 'win32' ? createSettingsStore(resolve(root, '.local/service-settings.dpapi')) : null } = {}) {
   try { process.loadEnvFile(resolve(root, '.env')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (desktop) env = { ...env, PUBLIC_ORIGIN: '', ACCESS_TOKEN: '', TLS_CERT: '', TLS_KEY: '' };
   host ??= env.HOST || '127.0.0.1';
   port ??= Number(env.PORT || 4318);
   const tls = Boolean(env.TLS_CERT && env.TLS_KEY);
   if (!['127.0.0.1', 'localhost', '::1'].includes(host) && (!tls || !env.ACCESS_TOKEN || !env.PUBLIC_ORIGIN)) throw new Error('手机 / 局域网接入需要 TLS_CERT、TLS_KEY、ACCESS_TOKEN 和 PUBLIC_ORIGIN。');
-  const handler = createHandler({ config: initialConfig(env), accessToken: env.ACCESS_TOKEN, publicOrigin: env.PUBLIC_ORIGIN });
+  const config = settingsStore ? await settingsStore.load(initialConfig(env)) : initialConfig(env);
+  const handler = createHandler({ config, settingsStore, accessToken: env.ACCESS_TOKEN, publicOrigin: env.PUBLIC_ORIGIN });
   const server = tls ? https.createServer({ cert: await readFile(resolve(root, env.TLS_CERT)), key: await readFile(resolve(root, env.TLS_KEY)) }, handler) : http.createServer(handler);
   server.on('upgrade', handler.upgrade);
   server.on('close', () => handler.upgrade.close());

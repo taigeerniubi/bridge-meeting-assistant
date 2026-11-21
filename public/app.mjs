@@ -12,7 +12,7 @@ let glossary = read('bridge.glossary', defaultGlossary);
 let preferences = read('bridge.preferences', { microphone: '', output: '', micSource: 'me', accent: 'en-US' });
 let meeting = meetings.find(m => m.id === read('bridge.active', '')) || meetings[0];
 if (!meeting) { meeting = createMeeting(); meetings.unshift(meeting); }
-let config, csrf, liveAvailable = false, language = 'both', editingId, summaryBusy = false, ending = false;
+let config, csrf, liveAvailable = false, persistentSettings = false, language = 'both', editingId, summaryBusy = false, ending = false;
 let pending = 0, captureStops = 0, toastTimer, storageFailed = false;
 const captures = new Map(), starting = new Set(), laneQueues = new Map(), audioBuffers = new Map();
 const jobs = new Set();
@@ -79,6 +79,7 @@ async function bootstrap() {
     if (data.locked) { $('#unlock-dialog').showModal(); return; }
     if (!response.ok) throw new Error(data.error || '无法连接本机服务。');
     config = data.config; csrf = data.csrf; liveAvailable = data.capabilities?.liveTranslation === true;
+    persistentSettings = data.capabilities?.persistentSettings === true;
     $('#test-notice').hidden = !data.testMode;
     renderService();
   } catch (error) { $('#service-status').textContent = '服务未连接'; toast(error.message, true); }
@@ -435,6 +436,7 @@ async function enumerateDevices() {
 function openSettings() {
   if (!config) { toast('本机服务尚未连接，请刷新页面后重试。', true); return; }
   renderProviderFields();
+  $('#settings-storage-note').textContent = persistentSettings ? '保存后，API Key 和服务配置会加密保存在本机，重启自动恢复。留空保留已有 Key；清除密钥后重启也不会恢复。' : '当前服务仅在内存中保留设置；可在本机 .env 文件中配置密钥。';
   for (const stage of ['asr', 'text', 'speech']) $(`#route-${stage}`).value = config.routing[stage];
   $('#capture-mode').value = liveMode() ? 'realtime' : 'utterance';
   $('#mic-source').value = preferences.micSource || 'me'; $('#settings-error').textContent = '';
@@ -462,7 +464,7 @@ async function saveSettings(close = true) {
 
 $('#settings-form').addEventListener('submit', async event => {
   event.preventDefault(); const button = event.submitter; button.disabled = true;
-  try { await saveSettings(); toast('设置已保存。密钥只保留在本机服务内存中。'); } catch (error) { $('#settings-error').textContent = error.message; }
+  try { await saveSettings(); toast(persistentSettings ? '设置已加密保存到本机，重启后自动恢复。' : '设置已保存到当前服务内存。'); } catch (error) { $('#settings-error').textContent = error.message; }
   finally { button.disabled = false; }
 });
 $('#test-service').addEventListener('click', async event => {

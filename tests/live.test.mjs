@@ -71,6 +71,23 @@ test('3.5 draft revisions replace stash and out-of-order translation events wait
   assert.equal(events.at(-1).final, false); assert.match(events.at(-1).error, /未完整/);
 });
 
+test('source-audio and unlinked creation events do not disconnect or mispair live translation', () => {
+  const events = [], state = new LiveTranscript(event => events.push(event));
+  state.process({ type: 'conversation.item.created', previous_item_id: null, item: { id: 'source', role: 'assistant', content: [{ type: 'input_audio' }] } });
+  state.process({ type: 'conversation.item.created', previous_item_id: 'earlier-turn', item: { id: 'source', role: 'assistant', content: [{ type: 'input_audio' }] } });
+  assert.equal(state.translations.has('source'), false);
+  for (const previous_item_id of [undefined, null, '']) state.process({ type: 'conversation.item.created', previous_item_id, item: { id: 'translation', role: 'assistant', content: [] } });
+  assert.equal(state.items.size, 0); assert.equal(events.length, 0);
+  state.process({ type: 'response.audio_transcript.delta', item_id: 'translation', delta: 'Do not deploy.' });
+  state.process({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'source', delta: '不要发布。' });
+  state.process({ type: 'conversation.item.created', previous_item_id: 'source', item: { id: 'translation', role: 'assistant', content: [] } });
+  assert.equal(events.at(-1).original, '不要发布。'); assert.equal(events.at(-1).translated, 'Do not deploy.');
+  assert.equal(events.at(-1).final, false);
+  state.process({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'source', transcript: '不要发布。' });
+  state.process({ type: 'response.done', response: { status: 'completed', output: [{ id: 'translation', content: [{ transcript: 'Do not deploy.' }] }] } });
+  assert.equal(events.at(-1).final, true); assert.equal(state.waitingCount, 0);
+});
+
 test('cancelled responses with empty output retain drafts and empty final text is never confirmed', () => {
   const events = [], state = new LiveTranscript(event => events.push(event));
   state.process({ type: 'conversation.item.created', previous_item_id: 'in', item: { id: 'out', role: 'assistant' } });

@@ -48,6 +48,10 @@ export class LiveTranscript {
       return;
     }
     if (type === 'conversation.item.created' && event.item?.role === 'assistant') {
+      // Creation notifications also include source-audio/placeholder items.
+      // Only a translation with an explicit source link establishes a pair.
+      if (event.item.content?.some(part => part.type === 'input_audio') || event.previous_item_id == null || event.previous_item_id === '') return;
+      if (typeof event.item.id !== 'string' || !event.item.id || event.item.id.length > 200) throw new Error('同传服务返回了无效的译文标识。');
       this.item(event.previous_item_id);
       this.translations.set(event.item.id, event.previous_item_id);
       const buffered = this.waiting.get(event.item.id) || [];

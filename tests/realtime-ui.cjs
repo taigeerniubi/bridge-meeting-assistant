@@ -30,6 +30,8 @@ app.whenReady().then(async () => {
       const event = JSON.parse(data);
       if (event.type === 'session.update') queueMicrotask(() => socket.feed({ type: 'session.updated' }));
       if (event.type === 'input_audio_buffer.append' && ++socket.frames === 2) {
+        socket.feed({ type: 'conversation.item.created', previous_item_id: null, item: { id: 'source', role: 'assistant', content: [{ type: 'input_audio' }] } });
+        socket.feed({ type: 'conversation.item.created', previous_item_id: null, item: { id: 'translation', role: 'assistant', content: [] } });
         socket.feed({ type: 'input_audio_buffer.speech_started', item_id: 'source', speaker_id: 3 });
         socket.feed({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'source', delta: '这个 API' });
         socket.feed({ type: 'conversation.item.created', previous_item_id: 'source', item: { id: 'translation', role: 'assistant' } });

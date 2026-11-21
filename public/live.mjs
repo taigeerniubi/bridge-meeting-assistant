@@ -3,6 +3,7 @@ import { AudioCapture } from './capture.mjs';
 export class RealtimeCapture {
   constructor({ csrf, source, targetLanguage, glossary, audio, onTranscript, onAudio, onLevel, onEnded, onError }) {
     Object.assign(this, { csrf, source, targetLanguage, glossary, audio, onTranscript, onAudio, onLevel, onEnded, onError });
+    this.playbackEnabled = audio === true;
     this.live = true; this.pre = []; this.preBytes = 0;
     this.finishedPromise = new Promise(resolve => { this.resolveFinished = resolve; });
     this.readyPromise = new Promise((resolve, reject) => { this.resolveReady = resolve; this.rejectReady = reject; });
@@ -28,7 +29,7 @@ export class RealtimeCapture {
             for (const frame of this.pre) this.sendPcm(frame);
             this.pre = []; this.preBytes = 0; this.resolveReady();
           } else if (message.type === 'transcript') this.onTranscript?.(message);
-          else if (message.type === 'audio') this.onAudio?.(message);
+          else if (message.type === 'audio' && this.playbackEnabled) this.onAudio?.(message);
           else if (message.type === 'error') this.fail(new Error(message.error));
           else if (message.type === 'finished') { this.finished = true; this.resolveFinished(); this.socket.close(); }
         } catch (error) { this.fail(error); }
@@ -53,8 +54,9 @@ export class RealtimeCapture {
   }
   setBlocked(blocked) { this.capture?.setBlocked(blocked); }
   setAudioEnabled(enabled) {
-    this.audio = enabled;
-    if (this.ready && !this.stopping && !this.failed && this.socket.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify({ type: 'playback', enabled }));
+    // Qwen session configuration is fixed once audio starts. This switch only
+    // mutes/resumes local playback; it must never reconfigure the live session.
+    this.playbackEnabled = enabled === true;
   }
   fail(error) {
     if (this.failed || this.finished) return;

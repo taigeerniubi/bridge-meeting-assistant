@@ -120,7 +120,7 @@ export function createLiveGateway({ getConfig, authorize, socketFactory = (url, 
   const upgrade = (req, socket, head) => {
     if (!authorize(req) || wss.clients.size >= 4) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return; }
     wss.handleUpgrade(req, socket, head, client => {
-      let upstream, provider, settings, ready = false, finishing = false, ended = false;
+      let upstream, provider, configured = false, playbackEnabled = true, ready = false, finishing = false, ended = false;
       let timer = setTimeout(() => fail('实时连接初始化超时，请重新接入音频。'), 15000);
       const redact = message => String(message).split(provider?.key || '\0').join('[已隐藏]').slice(0, 500);
       const send = event => {
@@ -128,7 +128,7 @@ export function createLiveGateway({ getConfig, authorize, socketFactory = (url, 
         if (client.bufferedAmount > 2_000_000) { client.terminate(); return; }
         client.send(JSON.stringify(event));
       };
-      const transcript = new LiveTranscript(send);
+      const transcript = new LiveTranscript(event => { if (event.type !== 'audio' || playbackEnabled) send(event); });
       const closeUpstream = () => { if (upstream && upstream.readyState !== WebSocket.CLOSED) upstream.terminate(); };
       const fail = message => {
         if (ended) return;
@@ -154,7 +154,7 @@ export function createLiveGateway({ getConfig, authorize, socketFactory = (url, 
             if (!['me', 'remote'].includes(event.source) || !Array.isArray(event.glossary || [])) throw new Error('请选择有效的音频来源。');
             provider = getConfig().providers.qwen;
             if (!provider?.key) throw new Error('实时同传需要在设置中填写 Qwen / 百炼 API Key。');
-            settings = { source: event.source, targetLanguage: event.targetLanguage, audio: event.audio === true, glossary: event.glossary || [] };
+            const settings = { source: event.source, targetLanguage: event.targetLanguage, audio: event.audio === true, glossary: event.glossary || [] };
             const session = liveSession(provider, settings);
             const url = new URL(provider.liveUrl);
             if (url.protocol !== 'wss:' || url.username || url.password || url.search || url.hash) throw new Error('实时同传地址需要使用无密码、无查询参数的 wss:// 地址。');
@@ -166,7 +166,7 @@ export function createLiveGateway({ getConfig, authorize, socketFactory = (url, 
             upstream.on('message', message => {
               try {
                 const result = JSON.parse(message.toString());
-                if (result.type === 'session.created') sendUpstream({ type: 'session.update', session });
+                if (result.type === 'session.created' && !configured) { configured = true; sendUpstream({ type: 'session.update', session }); }
                 else if (result.type === 'session.updated' && !ready) { clearTimeout(timer); ready = true; send({ type: 'ready', model: provider.liveModel }); }
                 else if (result.type === 'error') fail(result.error?.message || '实时同传服务返回错误。');
                 else if (result.type === 'session.finished') {
@@ -176,10 +176,10 @@ export function createLiveGateway({ getConfig, authorize, socketFactory = (url, 
             });
             return;
           }
-          if (event.type === 'playback' && ready && !finishing) {
-            settings.audio = event.enabled === true;
-            const session = liveSession(provider, settings);
-            sendUpstream({ type: 'session.update', session: { [session.modalities ? 'modalities' : 'output_modalities']: session.modalities || session.output_modalities } }); return;
+          if (event.type === 'playback') {
+            // Older pages send playback messages. Only filter outgoing audio;
+            // never send another session.update, including while draining.
+            playbackEnabled = event.enabled === true; return;
           }
           if (event.type === 'finish' && ready && !finishing) {
             finishing = true; sendUpstream({ type: 'session.finish' });

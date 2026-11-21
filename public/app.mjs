@@ -268,7 +268,7 @@ async function startLiveCapture(kind) {
     starting.add(kind); updateActivity();
     await ensureLiveOutputRouting(kind);
     if (targetLanguage === 'en' && $('#autoplay').checked) await livePlayer.prepare(preferences.output);
-    capture = new RealtimeCapture({ csrf, source, targetLanguage, glossary: structuredClone(glossary), audio: targetLanguage === 'en' && $('#autoplay').checked,
+    capture = new RealtimeCapture({ csrf, source, targetLanguage, glossary: structuredClone(glossary), audio: targetLanguage === 'en',
       onTranscript: result => {
         if (target !== meeting || (!result.original && !result.translated)) return;
         let entry = entries.get(result.id);

@@ -31,6 +31,10 @@ app.whenReady().then(async () => {
     socket.send = data => {
       const event = JSON.parse(data);
       if (event.type === 'session.update') {
+        socket.updates = (socket.updates || 0) + 1;
+        if (socket.frames > 0) {
+          socket.feed({ type: 'error', error: { message: 'Session update error: session already started or finished or failed.' } }); return;
+        }
         if (event.session.translation) socket.targetLanguage = event.session.translation.language;
         socket.modalities = event.session.output_modalities || socket.modalities;
         queueMicrotask(() => socket.feed({ type: 'session.updated' }));
@@ -111,15 +115,35 @@ app.whenReady().then(async () => {
   fs.writeFileSync(path.join(out, 'complete.png'), (await win.webContents.capturePage()).toPNG());
   await win.webContents.executeJavaScript("document.querySelector('#mic-direction').value = 'en'; document.querySelector('#mic-direction').dispatchEvent(new Event('change'));", true);
   assert.equal(await win.webContents.executeJavaScript("document.querySelector('#autoplay').checked"), true);
+  await win.webContents.executeJavaScript("document.querySelector('#autoplay').checked = false; document.querySelector('#autoplay').dispatchEvent(new Event('change'));", true);
   await win.webContents.executeJavaScript("document.querySelector('#mic-button').click()", true);
   await waitFor(() => win.webContents.executeJavaScript("JSON.parse(localStorage.getItem('bridge.meetings'))[0].entries.length === 2"), 'second live session');
   await waitFor(() => upstreams[1]?.audioSent === true, 'Chinese to English mode still streams male speech');
   await waitFor(() => win.webContents.executeJavaScript("document.querySelectorAll('#transcript .english')[1].textContent === 'This API'"), 'second live translation');
   assert.equal(upstreams[1].targetLanguage, 'en');
+  assert.equal(await win.webContents.executeJavaScript("document.querySelector('#autoplay').checked"), false, 'capture can begin muted and resume without reconfiguration');
+  for (const enabled of [false, true, false, true]) {
+    await win.webContents.executeJavaScript(`document.querySelector('#autoplay').checked = ${enabled}; document.querySelector('#autoplay').dispatchEvent(new Event('change'));`, true);
+    await delay(60);
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('#mic-button').textContent.includes('关闭麦克风')"), true);
+    assert.equal(upstreams[1].updates, 1, 'playback must never reconfigure a running provider session');
+  }
+  upstreams[1].feed({ type: 'response.audio.delta', item_id: 'translation', delta: Buffer.alloc(24000 * 2 * 9).toString('base64') });
+  await waitFor(() => win.webContents.executeJavaScript("!document.querySelector('#autoplay').checked"), 'backlog automatically mutes playback');
+  assert.equal(await win.webContents.executeJavaScript("document.querySelector('#mic-button').textContent.includes('关闭麦克风')"), true);
+  assert.equal(upstreams[1].updates, 1, 'automatic backlog pause must also preserve the session');
+  await win.webContents.executeJavaScript("document.querySelector('#autoplay').checked = true; document.querySelector('#autoplay').dispatchEvent(new Event('change'));", true);
+  await delay(60);
+  upstreams[1].feed({ type: 'response.audio.delta', item_id: 'translation', delta: Buffer.alloc(48000).toString('base64') });
+  await waitFor(() => win.webContents.executeJavaScript("!document.querySelector('#stop-speech').disabled"), 'resumed PCM playback');
+  await win.webContents.executeJavaScript("document.querySelector('#stop-speech').click()", true);
+  upstreams[1].feed({ type: 'response.audio_transcript.delta', item_id: 'translation', delta: ' continues' });
+  await waitFor(() => win.webContents.executeJavaScript("document.querySelectorAll('#transcript .english')[1].textContent === 'This API continues'"), 'captions continue after stopping speech');
+  assert.equal(upstreams[1].updates, 1);
   upstreams[1].feed({ type: 'error', error: { message: 'Fixture connection dropped' } });
   await waitFor(() => win.webContents.executeJavaScript("fixtureAudioStreams[1].getTracks().every(track => track.readyState === 'ended')"), 'error releases microphone');
   const partial = await win.webContents.executeJavaScript("JSON.parse(localStorage.getItem('bridge.meetings'))[0].entries[1]");
-  assert.equal(partial.status, 'error'); assert.equal(partial.english, 'This API'); assert.equal(partial.originalConfirmed, false);
+  assert.equal(partial.status, 'error'); assert.equal(partial.english, 'This API continues'); assert.equal(partial.originalConfirmed, false);
   assert.equal(upstreams[1].readyState, 3);
   assert.deepEqual(rendererErrors, []);
   await win.webContents.executeJavaScript("Promise.all(fixtureAudioContexts.map(context => context.close()))");

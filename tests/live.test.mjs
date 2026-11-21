@@ -211,6 +211,32 @@ test('WebSocket requires matching origin, CSRF and access-password authenticatio
   assert.equal(denied, 403); assert.equal(f.upstreams.length, 0); assert.equal(locked.upstreams.length, 0);
 });
 
+test('playback toggles keep an active provider session unchanged and captions continue', async t => {
+  const f = await fixture(t), client = new WebSocket(f.url, { origin: f.origin }), received = observe(client);
+  t.after(() => client.terminate()); await once(client, 'open');
+  client.send(JSON.stringify({ type: 'start', source: 'me', targetLanguage: 'en', audio: true }));
+  await received.wait(event => event.type === 'ready');
+  const upstream = f.upstreams[0];
+  client.send(Buffer.alloc(3200));
+  for (const enabled of [false, true, false, true]) client.send(JSON.stringify({ type: 'playback', enabled }));
+  client.send(Buffer.alloc(3200));
+  for (let i = 0; i < 50 && upstream.sent.filter(event => event.type === 'input_audio_buffer.append').length < 2; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(upstream.sent.filter(event => event.type === 'input_audio_buffer.append').length, 2);
+  upstream.feed({ type: 'session.created' });
+  assert.equal(upstream.sent.filter(event => event.type === 'session.update').length, 1);
+  upstream.feed({ type: 'conversation.item.input_audio_transcription.delta', item_id: 'src', delta: '继续' });
+  upstream.feed({ type: 'conversation.item.created', previous_item_id: 'src', item: { id: 'dst', role: 'assistant' } });
+  upstream.feed({ type: 'response.audio_transcript.delta', item_id: 'dst', delta: 'Continue' });
+  upstream.feed({ type: 'response.audio.delta', item_id: 'dst', delta: 'AAAA' });
+  await received.wait(event => event.type === 'audio');
+  assert.ok(received.events.some(event => event.translated === 'Continue'));
+  assert.equal(received.events.some(event => event.type === 'error'), false);
+  client.send(JSON.stringify({ type: 'playback', enabled: false }));
+  client.send(JSON.stringify({ type: 'finish' }));
+  await received.wait(event => event.type === 'finished');
+  assert.equal(upstream.sent.filter(event => event.type === 'session.update').length, 1);
+});
+
 test('provider errors redact credentials and preserve partial captions', async t => {
   const f = await fixture(t), client = new WebSocket(f.url, { origin: f.origin }), received = observe(client);
   t.after(() => client.terminate()); await once(client, 'open'); client.send(JSON.stringify({ type: 'start', source: 'remote', glossary: [] }));

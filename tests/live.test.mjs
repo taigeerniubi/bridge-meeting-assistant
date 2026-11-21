@@ -24,6 +24,13 @@ test('live translation uses the correct protocol, language direction and termino
   assert.deepEqual(remote.output_modalities, ['text']);
   assert.equal(remote.translation.language, 'zh');
   assert.deepEqual(remote.translation.corpus.phrases, { retry: '重试' });
+  const englishMic = liveSession(provider, { source: 'me', targetLanguage: 'zh', audio: true, glossary });
+  assert.equal(englishMic.translation.language, 'zh', 'speaker labels must not select the translation language');
+  assert.deepEqual(englishMic.translation.corpus.phrases, { retry: '重试' });
+  assert.deepEqual(englishMic.output_modalities, ['text'], 'English listening must not echo English or generate unwanted Chinese audio');
+  const chineseOther = liveSession(provider, { source: 'remote', targetLanguage: 'en', audio: true, glossary });
+  assert.equal(chineseOther.translation.language, 'en'); assert.deepEqual(chineseOther.output_modalities, ['text', 'audio']);
+  assert.throws(() => liveSession(provider, { source: 'me', targetLanguage: 'auto' }), /目标语言/);
   const legacy = liveSession({ ...provider, liveModel: 'qwen3.5-livetranslate-flash-realtime' }, { source: 'me', audio: true });
   assert.deepEqual(legacy.modalities, ['text', 'audio']);
   assert.equal(legacy.voice, 'Aiden');

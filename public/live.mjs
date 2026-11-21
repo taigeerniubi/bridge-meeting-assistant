@@ -1,8 +1,8 @@
 import { AudioCapture } from './capture.mjs';
 
 export class RealtimeCapture {
-  constructor({ csrf, source, glossary, audio, onTranscript, onAudio, onLevel, onEnded, onError }) {
-    Object.assign(this, { csrf, source, glossary, audio, onTranscript, onAudio, onLevel, onEnded, onError });
+  constructor({ csrf, source, targetLanguage, glossary, audio, onTranscript, onAudio, onLevel, onEnded, onError }) {
+    Object.assign(this, { csrf, source, targetLanguage, glossary, audio, onTranscript, onAudio, onLevel, onEnded, onError });
     this.live = true; this.pre = []; this.preBytes = 0;
     this.finishedPromise = new Promise(resolve => { this.resolveFinished = resolve; });
     this.readyPromise = new Promise((resolve, reject) => { this.resolveReady = resolve; this.rejectReady = reject; });
@@ -19,7 +19,7 @@ export class RealtimeCapture {
       url.searchParams.set('csrf', this.csrf);
       this.socket = new WebSocket(url);
       this.timer = setTimeout(() => this.fail(new Error('实时连接超时，请检查同传配置后重试。')), 20000);
-      this.socket.onopen = () => this.socket.send(JSON.stringify({ type: 'start', source: this.source, glossary: this.glossary, audio: this.audio }));
+      this.socket.onopen = () => this.socket.send(JSON.stringify({ type: 'start', source: this.source, targetLanguage: this.targetLanguage, glossary: this.glossary, audio: this.audio }));
       this.socket.onmessage = event => {
         try {
           const message = JSON.parse(event.data);

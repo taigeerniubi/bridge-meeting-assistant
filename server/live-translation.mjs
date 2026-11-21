@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 
-export function liveSession(provider, { source, audio = false, glossary = [] }) {
+export function liveSession(provider, { source, targetLanguage = source === 'me' ? 'en' : 'zh', audio = false, glossary = [] }) {
+  if (!['en', 'zh'].includes(targetLanguage)) throw new Error('请选择英文或中文作为同传目标语言。');
   const phrases = Object.fromEntries(glossary.slice(0, 120).flatMap(term => {
     const en = String(term?.en || '').trim().slice(0, 100), zh = String(term?.zh || '').trim().slice(0, 100);
-    return en && zh ? [[source === 'me' ? zh : en, source === 'me' ? en : zh]] : [];
+    return en && zh ? [[targetLanguage === 'en' ? zh : en, targetLanguage === 'en' ? en : zh]] : [];
   }));
-  const translation = { language: source === 'me' ? 'en' : 'zh', corpus: { phrases } };
-  const modalities = audio && source === 'me' ? ['text', 'audio'] : ['text'];
+  const translation = { language: targetLanguage, corpus: { phrases } };
+  const modalities = audio && targetLanguage === 'en' ? ['text', 'audio'] : ['text'];
   if (/^qwen3\.5-livetranslate-/.test(provider.liveModel)) return {
     modalities, voice: provider.liveVoice, sample_rate: 16000,
     input_audio_format: 'pcm', output_audio_format: 'pcm', enable_voice_clone: false,
@@ -153,7 +154,7 @@ export function createLiveGateway({ getConfig, authorize, socketFactory = (url, 
             if (!['me', 'remote'].includes(event.source) || !Array.isArray(event.glossary || [])) throw new Error('请选择有效的音频来源。');
             provider = getConfig().providers.qwen;
             if (!provider?.key) throw new Error('实时同传需要在设置中填写 Qwen / 百炼 API Key。');
-            settings = { source: event.source, audio: event.audio === true, glossary: event.glossary || [] };
+            settings = { source: event.source, targetLanguage: event.targetLanguage, audio: event.audio === true, glossary: event.glossary || [] };
             const session = liveSession(provider, settings);
             const url = new URL(provider.liveUrl);
             if (url.protocol !== 'wss:' || url.username || url.password || url.search || url.hash) throw new Error('实时同传地址需要使用无密码、无查询参数的 wss:// 地址。');

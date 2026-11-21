@@ -20,6 +20,7 @@ let speechQueue = [], speaking = false, playbackActive = false, speechGeneration
 let liveSpeaking = false;
 let liveRenderTimer, liveSaveTimer;
 const liveMode = () => preferences.captureMode !== 'utterance';
+const micTargetLanguage = () => preferences.micTargetLanguage === 'en' ? 'en' : 'zh';
 const hasLiveDraft = () => meeting.entries.some(entry => entry.status === 'live');
 const livePlayer = new PcmStreamPlayer({ onActivity: active => {
   liveSpeaking = active;
@@ -101,16 +102,25 @@ function renderHistory() {
   $('#mobile-history').value = meeting.id;
 }
 
+function realtimeContent(entry) {
+  const toChinese = (entry.targetLanguage || (entry.source === 'me' ? 'en' : 'zh')) === 'zh';
+  const block = (lang, label, value, placeholder) => `<div class="caption-block"><div class="caption-label">${label}</div><div class="${lang === 'en' ? 'english' : 'chinese'}" lang="${lang}">${esc(value || placeholder)}</div></div>`;
+  const english = block('en', toChinese ? '英文原文' : '英文翻译', entry.spokenText || entry.english, toChinese ? '正在识别英文…' : '英文翻译正在跟进…');
+  const chinese = block('zh', toChinese ? '中文翻译' : '中文原文', entry.chinese, toChinese ? '中文翻译正在跟进，英文会继续显示…' : '正在识别中文…');
+  const status = entry.status === 'live' ? '实时更新 · 暂定内容会继续修正' : entry.status === 'done' ? '同传已完成' : '同传中断 · 以下为已收到的内容';
+  return `<div class="live-entry-status">${status}</div>${language === 'both' ? toChinese ? english + chinese : chinese + english : chinese}${entry.error ? `<div class="entry-error">${esc(entry.error)}</div>` : ''}`;
+}
+
 function renderTranscript(scroll = false) {
   const container = $('#transcript');
   const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 90;
   if (!meeting.entries.length) {
-    container.innerHTML = '<div class="empty-state"><div class="empty-visual" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div><h3>让对话自然发生</h3><p>开启麦克风，或接入会议音频。<br>你说中文，对方听见英文。</p><div class="empty-labels"><span>中英混合识别</span><span>IT 术语增强</span><span>双语记录</span></div></div>';
+    container.innerHTML = `<div class="empty-state"><div class="empty-visual" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div><h3>边听边看双语字幕</h3><p>开启麦克风，或接入会议音频。<br>${liveMode() && micTargetLanguage() === 'en' ? '中文原文持续显示，英文翻译与男声随后跟上。' : '英文原文持续显示，中文翻译随后跟上。'}</p><div class="empty-labels"><span>流式原文识别</span><span>IT 术语增强</span><span>双语字幕</span></div></div>`;
   } else {
     container.innerHTML = meeting.entries.map(e => {
       const successful = e.status === 'done';
       const status = { queued: '等待处理…', recognizing: '正在识别语音…', translating: '正在翻译…' }[e.status];
-      const content = e.input === 'realtime' ? `<div class="live-entry-status">${e.status === 'live' ? '实时更新 · 暂定内容会继续修正' : successful ? '同传已完成' : '同传中断 · 以下为已收到的内容'}</div><div class="chinese">${esc(e.chinese || (e.source === 'remote' ? '正在翻译…' : '正在识别…'))}</div>${language === 'both' ? `<div class="english" lang="en">${esc(e.spokenText || e.english || (e.source === 'me' ? '正在翻译…' : '正在识别…'))}</div>` : ''}${e.error ? `<div class="entry-error">${esc(e.error)}</div>` : ''}` : successful ? `<div class="chinese">${esc(e.chinese)}</div>${language === 'both' ? `<div class="english" lang="en">${esc(e.spokenText || e.english)}</div>` : ''}` : e.status === 'error' ? `<div class="entry-error">${esc(e.error)}</div>${e.original ? `<div class="original-text">${esc(e.original)}</div>` : ''}` : `<div class="pending">${status || '处理中…'}</div>${e.original ? `<div class="original-text">${esc(e.original)}</div>` : ''}`;
+      const content = e.input === 'realtime' ? realtimeContent(e) : successful ? `<div class="chinese">${esc(e.chinese)}</div>${language === 'both' ? `<div class="english" lang="en">${esc(e.spokenText || e.english)}</div>` : ''}` : e.status === 'error' ? `<div class="entry-error">${esc(e.error)}</div>${e.original ? `<div class="original-text">${esc(e.original)}</div>` : ''}` : `<div class="pending">${status || '处理中…'}</div>${e.original ? `<div class="original-text">${esc(e.original)}</div>` : ''}`;
       return `<article class="entry ${e.source === 'me' ? 'me' : 'remote'}" id="entry-${esc(e.id)}"><div class="speaker-avatar">${e.source === 'me' ? '我' : 'EN'}</div><div class="entry-content"><div class="entry-meta"><b>${e.source === 'me' ? '我的发言' : `对方${e.speakerLabel ? ` · ${esc(e.speakerLabel)}` : '发言'}`}</b><time>${time(e.time)}</time><span class="entry-origin">${meeting.demo ? '示例' : e.input === 'realtime' ? '实时音频' : e.input === 'audio' ? '音频' : '文字'}</span></div><div class="translation">${content}</div><div class="entry-tools">${successful && e.source === 'me' ? `<button class="text-button" data-play="${esc(e.id)}">▷ 播放英文</button><button class="text-button" data-edit="${esc(e.id)}">编辑后播放</button>` : ''}${successful ? `<button class="text-button" data-copy="${esc(e.id)}">复制${e.source === 'me' ? '英文' : '中文'}</button><details><summary>原文</summary><div class="original-text">${esc(e.original)}</div></details>` : ''}${e.status === 'error' ? `<button class="text-button" data-retry="${esc(e.id)}">重试</button>` : ''}${e.uncertain ? '<span class="uncertain">有歧义，请核对原文</span>' : ''}${e.elapsed && !meeting.demo ? `<span>${e.elapsed.toFixed(1)}s 处理</span>` : ''}</div></div></article>`;
     }).join('');
   }
@@ -140,14 +150,19 @@ function renderMeeting() {
   $('#meeting-title').value = meeting.title;
   $('#meeting-date').textContent = new Date(meeting.createdAt).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' });
   $('#demo-notice').hidden = !meeting.demo;
-  $('#autoplay').checked = liveMode();
+  $('#autoplay').checked = liveMode() && micTargetLanguage() === 'en';
   renderService(); renderHistory(); renderTranscript(); renderSummary(); updateActivity();
 }
 
 function updateActivity() {
   $('#live-mark').classList.toggle('on', captures.size > 0);
   $('#queue-status').textContent = meeting.demo ? '预置示例 · 非实时识别' : starting.size ? '正在连接音频与同传服务…' : captureStops ? '正在收取最后的字幕与译文…' : captures.size && liveMode() ? '实时同传中 · 可以连续说话' : pending ? `${pending} 条处理中` : speaking ? '语音生成 / 播报中' : captures.size ? '短句模式 · 停顿后翻译' : meeting.endedAt ? '会议已结束' : '等待接入音频';
-  $('#audio-source-hint').textContent = `${liveMode() ? '实时同传' : '短句模式'} · 麦克风 → ${preferences.micSource === 'remote' ? '对方' : '我'} · 会议音频 → 对方`;
+  $('#audio-source-hint').textContent = liveMode() ? `麦克风：${micTargetLanguage() === 'zh' ? '英文原文＋中文翻译' : '中文原文＋英文翻译'} · 会议音频：英文原文＋中文翻译` : '短句模式 · 停顿后显示中英翻译';
+  $('#mic-direction-control').hidden = !liveMode();
+  $('#mic-direction').value = micTargetLanguage();
+  $('#mic-direction').disabled = meeting.demo || ending || Boolean(meeting.endedAt) || captures.has('mic') || starting.has('mic') || captureStops > 0;
+  $('#autoplay-hint').textContent = liveMode() && micTargetLanguage() === 'zh' ? '英文→中文模式只显示字幕；切换中文→英文可播报男声' : liveMode() ? '英文译音分片连续播放' : '自动播放后续英文译文';
+  if (liveMode() && micTargetLanguage() === 'zh' && !speaking && !liveSpeaking) $('#playback-status').textContent = '当前显示英文原文和中文翻译';
   $('#stop-audio').hidden = captures.size === 0;
   $('#mic-button').classList.toggle('active', captures.has('mic'));
   $('#mic-button').innerHTML = `<span aria-hidden="true">◉</span> ${captures.has('mic') ? '关闭麦克风' : '开启麦克风'}`;
@@ -158,7 +173,7 @@ function updateActivity() {
   $('#text-input').disabled = ending || meeting.demo || Boolean(meeting.endedAt);
   $('#mic-button').disabled = ending || meeting.demo || Boolean(meeting.endedAt) || starting.has('mic') || captureStops > 0;
   $('#system-button').disabled = ending || meeting.demo || Boolean(meeting.endedAt) || starting.has('system') || captureStops > 0;
-  $('#autoplay').disabled = meeting.demo || ending || Boolean(meeting.endedAt);
+  $('#autoplay').disabled = meeting.demo || ending || Boolean(meeting.endedAt) || (liveMode() && micTargetLanguage() === 'zh');
   $('#new-meeting').disabled = ending || summaryBusy;
   $('#finish-button').textContent = ending ? '正在结束…' : meeting.endedAt ? '会议已结束' : '结束并总结';
 }
@@ -228,9 +243,9 @@ async function toggleCapture(kind) {
 }
 
 async function ensureLiveOutputRouting(kind) {
-  const meActive = preferences.micSource !== 'remote' && (kind === 'mic' || captures.has('mic'));
+  const englishMicActive = micTargetLanguage() === 'en' && (kind === 'mic' || captures.has('mic'));
   const systemActive = kind === 'system' || captures.has('system');
-  if (!meActive || !systemActive || !$('#autoplay').checked) return;
+  if (!englishMicActive || !systemActive || !$('#autoplay').checked) return;
   const devices = await navigator.mediaDevices.enumerateDevices();
   const selected = devices.find(device => device.kind === 'audiooutput' && device.deviceId === preferences.output);
   const defaults = devices.filter(device => device.kind === 'audiooutput' && device.deviceId === 'default');
@@ -240,6 +255,7 @@ async function ensureLiveOutputRouting(kind) {
 async function startLiveCapture(kind) {
   const target = meeting, sessionId = crypto.randomUUID(), entries = new Map(), speakers = new Map();
   const source = kind === 'system' ? 'remote' : preferences.micSource || 'me';
+  const targetLanguage = kind === 'system' ? 'zh' : micTargetLanguage();
   let capture;
   const markInterrupted = message => {
     for (const entry of entries.values()) if (entry.status === 'live') { entry.status = 'error'; entry.error = message; }
@@ -251,13 +267,13 @@ async function startLiveCapture(kind) {
     if (speaking || speechQueue.length) stopSpeech();
     starting.add(kind); updateActivity();
     await ensureLiveOutputRouting(kind);
-    if (source === 'me' && $('#autoplay').checked) await livePlayer.prepare(preferences.output);
-    capture = new RealtimeCapture({ csrf, source, glossary: structuredClone(glossary), audio: source === 'me' && $('#autoplay').checked,
+    if (targetLanguage === 'en' && $('#autoplay').checked) await livePlayer.prepare(preferences.output);
+    capture = new RealtimeCapture({ csrf, source, targetLanguage, glossary: structuredClone(glossary), audio: targetLanguage === 'en' && $('#autoplay').checked,
       onTranscript: result => {
         if (target !== meeting || (!result.original && !result.translated)) return;
         let entry = entries.get(result.id);
         if (!entry) {
-          entry = { id: `${sessionId}-${result.id}`, source, input: 'realtime', time: new Date().toISOString(), status: 'live', original: '' };
+          entry = { id: `${sessionId}-${result.id}`, source, targetLanguage, input: 'realtime', time: new Date().toISOString(), status: 'live', original: '' };
           entries.set(result.id, entry); target.entries.push(entry); renderHistory();
         }
         if (Number.isInteger(result.speakerId) && source === 'remote') {
@@ -265,12 +281,12 @@ async function startLiveCapture(kind) {
           entry.speakerLabel = `发言者 ${speakers.get(result.speakerId)}`;
         }
         Object.assign(entry, { original: result.original, originalConfirmed: result.originalDone,
-          chinese: source === 'me' ? result.original : result.translated, english: source === 'me' ? result.translated : result.original,
+          chinese: targetLanguage === 'zh' ? result.translated : result.original, english: targetLanguage === 'zh' ? result.original : result.translated,
           status: result.error ? 'error' : result.final ? 'done' : 'live', error: result.error || null });
         updateLiveView(Boolean(result.final || result.error));
       },
       onAudio: result => {
-        if (source !== 'me' || !$('#autoplay').checked || target !== meeting || ending) return;
+        if (targetLanguage !== 'en' || !$('#autoplay').checked || target !== meeting || ending) return;
         try { livePlayer.push(result.data, result.sampleRate); }
         catch (error) { $('#autoplay').checked = false; stopSpeech(); toast(error.message, true); }
       },
@@ -286,7 +302,7 @@ async function startLiveCapture(kind) {
     captures.set(kind, capture); updateActivity();
     await capture.start(kind, preferences.microphone);
     if (target !== meeting || ending || target.endedAt || capture.stopping || capture.failed) { await capture.stop(); if (captures.get(kind) === capture) captures.delete(kind); return; }
-    toast(`${source === 'me' ? '我的发言' : '对方发言'}已接入实时同传，可以连续说话。`);
+    toast(`${kind === 'mic' ? '麦克风' : '会议音频'}已接入：${targetLanguage === 'zh' ? '英文原文持续显示，中文翻译跟进' : '中文原文与英文译文持续更新'}。`);
   } catch (error) {
     if (captures.get(kind) === capture) captures.delete(kind);
     markInterrupted(error.message); toast(error.message, true);
@@ -439,6 +455,7 @@ function openSettings() {
   $('#settings-storage-note').textContent = persistentSettings ? '保存后，API Key 和服务配置会加密保存在本机，重启自动恢复。留空保留已有 Key；清除密钥后重启也不会恢复。' : '当前服务仅在内存中保留设置；可在本机 .env 文件中配置密钥。';
   for (const stage of ['asr', 'text', 'speech']) $(`#route-${stage}`).value = config.routing[stage];
   $('#capture-mode').value = liveMode() ? 'realtime' : 'utterance';
+  $('#settings-mic-direction').value = micTargetLanguage();
   $('#mic-source').value = preferences.micSource || 'me'; $('#settings-error').textContent = '';
   void enumerateDevices().catch(() => {});
   if (!$('#settings-dialog').open) $('#settings-dialog').showModal();
@@ -456,7 +473,8 @@ async function saveSettings(close = true) {
   }
   const data = await api('/api/settings', payload); config = data.config;
   preferences.microphone = $('#microphone').value; preferences.output = $('#output-device').value; preferences.micSource = $('#mic-source').value;
-  preferences.captureMode = $('#capture-mode').value; $('#autoplay').checked = liveMode();
+  preferences.captureMode = $('#capture-mode').value; preferences.micTargetLanguage = $('#settings-mic-direction').value;
+  $('#autoplay').checked = liveMode() && micTargetLanguage() === 'en';
   updateActivity();
   save(); renderService(); renderProviderFields();
   if (close) $('#settings-dialog').close();
@@ -505,6 +523,13 @@ $('#text-form').addEventListener('submit', event => {
 });
 $('#text-input').addEventListener('keydown', event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); $('#text-form').requestSubmit(); } });
 $('#mic-button').addEventListener('click', () => void toggleCapture('mic'));
+$('#mic-direction').addEventListener('change', event => {
+  if (captures.has('mic') || starting.has('mic') || captureStops) { event.target.value = micTargetLanguage(); toast('请先停止麦克风采集，再切换翻译方向。'); return; }
+  preferences.micTargetLanguage = event.target.value === 'en' ? 'en' : 'zh';
+  stopSpeech(); $('#autoplay').checked = liveMode() && micTargetLanguage() === 'en';
+  save(); updateActivity();
+  toast(micTargetLanguage() === 'zh' ? '已切换为英文原文＋中文翻译。' : '已切换为中文→英文，可播放英文男声。');
+});
 $('#system-button').addEventListener('click', () => void toggleCapture('system'));
 $('#stop-audio').addEventListener('click', () => void stopCapture());
 $('#stop-speech').addEventListener('click', () => { $('#autoplay').checked = false; stopSpeech(); });
@@ -514,7 +539,7 @@ $('#autoplay').addEventListener('change', async event => {
       if (liveMode()) {
         if (!config?.providers.qwen.configured) { openSettings(); throw new Error('请先配置 Qwen 实时同传。'); }
         await ensureLiveOutputRouting(); await livePlayer.prepare(preferences.output);
-        for (const capture of captures.values()) if (capture.live && capture.source === 'me') capture.setAudioEnabled(true);
+        for (const capture of captures.values()) if (capture.live && capture.targetLanguage === 'en') capture.setAudioEnabled(true);
         toast('实时英文播放已开启，后续语音分片会连续播放；你可以继续说话。');
       } else { requireService('speech'); toast('自动播报已开启，仅播放后续“我的发言”的英文译文。有歧义的译文仍需手动确认。'); }
     }

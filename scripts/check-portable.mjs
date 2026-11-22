@@ -5,12 +5,14 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import WebSocket from 'ws';
-import { listPackage } from '@electron/asar';
+import { extractFile, listPackage } from '@electron/asar';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const { version } = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
 const artifact = path.join(root, 'release', `译桥-免安装-${version}-x64.exe`);
-const files = listPackage(path.join(root, 'release/win-unpacked/resources/app.asar'));
+const asar = path.join(root, 'release/win-unpacked/resources/app.asar');
+const files = listPackage(asar);
+assert.deepEqual(extractFile(asar, 'LICENSE'), await readFile(path.join(root, 'LICENSE')));
 assert.equal(files.some(file => /(?:^|[\\/])(?:\.env(?:\..*)?|\.local|\.git|tests|service-settings\.dpapi)(?:[\\/]|$)/.test(file)), false);
 await mkdir(path.join(root, '.local'), { recursive: true });
 const temporary = await mkdtemp(path.join(root, '.local', 'portable-check-'));

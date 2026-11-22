@@ -27,7 +27,7 @@
     "appId": "local.bridge.meeting-assistant",
     "productName": "译桥",
     "directories": { "output": "release", "buildResources": "build" },
-    "files": ["desktop/**", "server/**", "public/**", "package.json"],
+    "files": ["desktop/**", "server/**", "public/**", "package.json", "LICENSE"],
     "asar": true,
     "electronDist": "node_modules/electron/dist",
     "npmRebuild": false,

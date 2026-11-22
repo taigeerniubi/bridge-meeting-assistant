@@ -85,7 +85,9 @@ try {
   assert.equal(fresh.config.providers.qwen.configured, false, 'EXE must not contain a personal key');
   assert.equal(fresh.capabilities.persistentSettings, true);
   browser = await connect();
-  await waitFor(() => browser.evaluate("document.querySelector('#mic-direction')?.value === 'zh' && document.querySelector('#autoplay')?.disabled"), 'bilingual UI');
+  await waitFor(() => browser.evaluate("document.querySelector('[name=scenario]:checked')?.value === 'translation' && document.querySelector('#system-button')?.hidden"), 'default translation mode');
+  await browser.evaluate("document.querySelector('[name=scenario][value=meeting]').click()");
+  assert.equal(await browser.evaluate("!document.querySelector('#system-button').hidden && !document.querySelector('#autoplay').checked"), true);
   await browser.evaluate("document.querySelector('#meeting-title').value = '便携版重启检查'; document.querySelector('#meeting-title').dispatchEvent(new Event('input')); document.querySelector('#meeting-title').dispatchEvent(new Event('change'));");
   const fakeKey = 'portable-test-key-not-a-real-key';
   const saved = await fetch(`${origin}/api/settings`, { method: 'POST',
@@ -103,6 +105,7 @@ try {
   assert.equal(resumed.config.providers.qwen.liveVoice, 'Aiden');
   browser = await connect();
   await waitFor(() => browser.evaluate("document.querySelector('#meeting-title')?.value === '便携版重启检查'"), 'meeting history after restart');
+  assert.equal(await browser.evaluate("document.querySelector('[name=scenario]:checked').value === 'meeting' && !document.querySelector('#autoplay').checked"), true);
   const second = launch(false);
   await waitFor(() => second.exitCode !== null || second.launchError, 'second instance', 60000);
   assert.ifError(second.launchError); assert.equal(second.exitCode, 0);
@@ -110,7 +113,7 @@ try {
   assert.equal(await browser.evaluate("document.querySelector('#meeting-title').value"), '便携版重启检查');
   await close();
   const report = { freshLaunch: true, noEmbeddedKey: true, encryptedSettingsSurviveRestart: true,
-    historySurvivesRestart: true, duplicateLaunchKeepsOriginalWindow: true, testedFromChinesePathWithSpaces: true };
+    historySurvivesRestart: true, scenarioSurvivesRestartWithVoiceOff: true, duplicateLaunchKeepsOriginalWindow: true, testedFromChinesePathWithSpaces: true };
   await writeFile(path.join(temporary, 'report.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));
   console.log(`Isolated test output: ${temporary}`);

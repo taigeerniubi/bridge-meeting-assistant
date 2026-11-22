@@ -66,23 +66,41 @@ app.whenReady().then(async () => {
   win.webContents.on('console-message', event => { if (event.level === 'error' || event.level === 3) rendererErrors.push(event.message); });
   await win.loadURL(`http://127.0.0.1:${server.address().port}`);
   await waitFor(() => win.webContents.executeJavaScript("document.querySelector('#service-status').textContent === '服务已配置'"), 'bootstrap');
+  const view = (script, gesture = false) => win.webContents.executeJavaScript(script, gesture);
+  const click = selector => view(`document.querySelector(${JSON.stringify(selector)}).click()`, true);
+  const entries = () => view("JSON.parse(localStorage.getItem('bridge.meetings'))[0].entries");
   await win.webContents.executeJavaScript(`
-    globalThis.fixtureAudioContexts = []; globalThis.fixtureAudioStreams = [];
-    navigator.mediaDevices.getUserMedia = async () => {
+    globalThis.fixtureAudioContexts = []; globalThis.fixtureMicStreams = []; globalThis.fixtureSystemStreams = [];
+    globalThis.fixturePlaybackSinks = [];
+    const createInput = async streams => {
       const context = new AudioContext(); const oscillator = context.createOscillator();
       const destination = context.createMediaStreamDestination(); oscillator.connect(destination); oscillator.start();
-      fixtureAudioContexts.push(context); fixtureAudioStreams.push(destination.stream); await context.resume(); return destination.stream;
+      fixtureAudioContexts.push(context); streams.push(destination.stream); await context.resume(); return destination.stream;
+    };
+    navigator.mediaDevices.getUserMedia = () => createInput(fixtureMicStreams);
+    navigator.mediaDevices.getDisplayMedia = () => createInput(fixtureSystemStreams);
+    globalThis.fixtureDevices = [
+      { kind: 'audiooutput', deviceId: 'default', groupId: 'headset', label: 'Default headphones' },
+      { kind: 'audiooutput', deviceId: 'fixture-cable', groupId: 'cable', label: 'CABLE Input (fixture)' },
+    ];
+    navigator.mediaDevices.enumerateDevices = async () => fixtureDevices;
+    AudioContext.prototype.setSinkId = async function(id) { this.fixtureSinkId = id; };
+    const originalStart = AudioBufferSourceNode.prototype.start;
+    AudioBufferSourceNode.prototype.start = function(...args) {
+      fixturePlaybackSinks.push(this.context.fixtureSinkId || 'default');
+      return originalStart.apply(this, args);
     };
     document.querySelector('#mic-button').click();
   `, true);
   await waitFor(() => win.webContents.executeJavaScript("document.querySelector('#transcript').textContent.includes('This API')"), 'live captions while input remains open');
-  assert.equal(await win.webContents.executeJavaScript("document.querySelector('#mic-direction').value"), 'zh');
-  assert.equal(await win.webContents.executeJavaScript("document.querySelector('#autoplay').checked"), false);
+  assert.equal(await view("document.querySelector('[name=scenario]:checked').value"), 'translation');
+  assert.equal(await view("document.querySelector('#system-button').hidden && document.querySelector('#voice-panel').hidden"), true);
+  assert.equal(await view("document.querySelector('#scenario-picker').disabled"), true);
   assert.equal(await win.webContents.executeJavaScript("document.querySelector('#transcript').textContent.includes('中文翻译正在跟进')"), true, 'English must appear before the delayed Chinese result');
   await waitFor(() => win.webContents.executeJavaScript("document.querySelector('#transcript .chinese').textContent === '这个 API'"), 'Chinese follows English during capture');
   assert.equal(await win.webContents.executeJavaScript("document.querySelector('#transcript .english').textContent"), 'This API');
   assert.equal(upstreams[0].targetLanguage, 'zh'); assert.deepEqual(upstreams[0].modalities, ['text']);
-  assert.equal(await win.webContents.executeJavaScript("document.querySelector('#mic-button').textContent.includes('关闭麦克风')"), true);
+  assert.equal(await view("document.querySelector('#mic-button').textContent"), '停止麦克风翻译');
   assert.equal(await win.webContents.executeJavaScript("document.querySelector('#queue-status').textContent.includes('实时同传中')"), true);
   await waitFor(() => win.webContents.executeJavaScript("JSON.parse(localStorage.getItem('bridge.meetings'))[0].entries.length > 0"), 'interim persistence');
   assert.equal(await win.webContents.executeJavaScript("JSON.parse(localStorage.getItem('bridge.meetings'))[0].entries[0].status"), 'live');
@@ -91,63 +109,102 @@ app.whenReady().then(async () => {
   fs.writeFileSync(path.join(out, 'streaming.png'), (await win.webContents.capturePage()).toPNG());
   await win.webContents.executeJavaScript("document.querySelector('#stop-audio').click()", true);
   await waitFor(() => win.webContents.executeJavaScript("document.querySelector('#transcript').textContent.includes('This API needs a retry.') && document.querySelector('#queue-status').textContent === '等待接入音频'"), 'stop drains final transcript');
-  const entries = await win.webContents.executeJavaScript("JSON.parse(localStorage.getItem('bridge.meetings'))[0].entries");
-  assert.equal(entries.length, 1); assert.equal(entries[0].status, 'done'); assert.equal(entries[0].original, 'This API needs a retry.');
-  assert.equal(entries[0].chinese, '这个 API 需要重试。'); assert.equal(entries[0].english, 'This API needs a retry.');
-  assert.equal(entries[0].targetLanguage, 'zh'); assert.equal(upstreams[0].audioSent, undefined);
+  const [firstEntry] = await entries();
+  assert.equal(firstEntry.status, 'done'); assert.equal(firstEntry.original, 'This API needs a retry.');
+  assert.equal(firstEntry.chinese, '这个 API 需要重试。'); assert.equal(firstEntry.english, 'This API needs a retry.');
+  assert.equal(firstEntry.targetLanguage, 'zh'); assert.equal(firstEntry.source, 'remote'); assert.equal(firstEntry.audioSource, 'mic');
+  assert.equal(upstreams[0].audioSent, undefined);
   assert.ok(upstreams[0].frames >= 2); assert.equal(upstreams[0].readyState, 3);
-  assert.equal(await win.webContents.executeJavaScript("fixtureAudioStreams[0].getTracks().every(track => track.readyState === 'ended')"), true);
+  assert.equal(await view("fixtureMicStreams[0].getTracks().every(track => track.readyState === 'ended')"), true);
   assert.deepEqual(rendererErrors, []);
-  await win.webContents.executeJavaScript("document.querySelector('#settings-button').click()", true);
+  await click('[name=scenario][value=meeting]');
+  assert.equal(await view("document.querySelector('#autoplay').checked || fixtureMicStreams.length !== 1"), false, 'switching scenario does not activate the microphone');
+  await click('#autoplay');
+  await waitFor(() => view("document.querySelector('#playback-status').textContent.includes('独立的会议英文输出')"), 'missing virtual output explains recovery');
+  assert.equal(await view("document.querySelector('#autoplay').checked || fixtureMicStreams.length !== 1"), false, 'failed output validation leaves the microphone off');
+  await click('#output-settings');
   assert.equal(await win.webContents.executeJavaScript("document.querySelector('#capture-mode').value"), 'realtime');
   assert.equal(await win.webContents.executeJavaScript("document.querySelector('#qwen-liveModel').value"), 'qwen3.8-livetranslate-flash-realtime');
   assert.equal(await win.webContents.executeJavaScript("document.querySelector('#qwen-liveVoice').value"), 'Aiden');
   assert.equal(await win.webContents.executeJavaScript("document.querySelector('#qwen-voice').value"), 'Aiden');
-  assert.equal(await win.webContents.executeJavaScript("document.querySelector('#settings-mic-direction').value"), 'zh');
+  await waitFor(() => view("Boolean(document.querySelector('#output-device [value=fixture-cable]'))"), 'virtual output device listed');
+  await view("document.querySelector('#output-device').value = 'fixture-cable'");
   if (settingsStore) {
     assert.equal(await win.webContents.executeJavaScript("document.querySelector('#settings-storage-note').textContent.includes('重启自动恢复')"), true);
-    await win.webContents.executeJavaScript("document.querySelector('#settings-form button[type=submit]').click()", true);
-    await waitFor(() => win.webContents.executeJavaScript("!document.querySelector('#settings-dialog').open"), 'persist settings from UI');
-    assert.equal((await settingsStore.load(initialConfig({}))).providers.qwen.key, 'ui-fixture-only');
-  } else await win.webContents.executeJavaScript("document.querySelector('#close-settings').click()", true);
-  win.setSize(1000, 760);
-  await delay(100);
-  fs.writeFileSync(path.join(out, 'complete.png'), (await win.webContents.capturePage()).toPNG());
-  await win.webContents.executeJavaScript("document.querySelector('#mic-direction').value = 'en'; document.querySelector('#mic-direction').dispatchEvent(new Event('change'));", true);
-  assert.equal(await win.webContents.executeJavaScript("document.querySelector('#autoplay').checked"), true);
-  await win.webContents.executeJavaScript("document.querySelector('#autoplay').checked = false; document.querySelector('#autoplay').dispatchEvent(new Event('change'));", true);
-  await win.webContents.executeJavaScript("document.querySelector('#mic-button').click()", true);
-  await waitFor(() => win.webContents.executeJavaScript("JSON.parse(localStorage.getItem('bridge.meetings'))[0].entries.length === 2"), 'second live session');
-  await waitFor(() => upstreams[1]?.audioSent === true, 'Chinese to English mode still streams male speech');
-  await waitFor(() => win.webContents.executeJavaScript("document.querySelectorAll('#transcript .english')[1].textContent === 'This API'"), 'second live translation');
-  assert.equal(upstreams[1].targetLanguage, 'en');
-  assert.equal(await win.webContents.executeJavaScript("document.querySelector('#autoplay').checked"), false, 'capture can begin muted and resume without reconfiguration');
-  for (const enabled of [false, true, false, true]) {
-    await win.webContents.executeJavaScript(`document.querySelector('#autoplay').checked = ${enabled}; document.querySelector('#autoplay').dispatchEvent(new Event('change'));`, true);
-    await delay(60);
-    assert.equal(await win.webContents.executeJavaScript("document.querySelector('#mic-button').textContent.includes('关闭麦克风')"), true);
-    assert.equal(upstreams[1].updates, 1, 'playback must never reconfigure a running provider session');
   }
-  upstreams[1].feed({ type: 'response.audio.delta', item_id: 'translation', delta: Buffer.alloc(24000 * 2 * 9).toString('base64') });
-  await waitFor(() => win.webContents.executeJavaScript("!document.querySelector('#autoplay').checked"), 'backlog automatically mutes playback');
-  assert.equal(await win.webContents.executeJavaScript("document.querySelector('#mic-button').textContent.includes('关闭麦克风')"), true);
-  assert.equal(upstreams[1].updates, 1, 'automatic backlog pause must also preserve the session');
-  await win.webContents.executeJavaScript("document.querySelector('#autoplay').checked = true; document.querySelector('#autoplay').dispatchEvent(new Event('change'));", true);
-  await delay(60);
-  upstreams[1].feed({ type: 'response.audio.delta', item_id: 'translation', delta: Buffer.alloc(48000).toString('base64') });
-  await waitFor(() => win.webContents.executeJavaScript("!document.querySelector('#stop-speech').disabled"), 'resumed PCM playback');
-  await win.webContents.executeJavaScript("document.querySelector('#stop-speech').click()", true);
-  upstreams[1].feed({ type: 'response.audio_transcript.delta', item_id: 'translation', delta: ' continues' });
-  await waitFor(() => win.webContents.executeJavaScript("document.querySelectorAll('#transcript .english')[1].textContent === 'This API continues'"), 'captions continue after stopping speech');
-  assert.equal(upstreams[1].updates, 1);
-  upstreams[1].feed({ type: 'error', error: { message: 'Fixture connection dropped' } });
-  await waitFor(() => win.webContents.executeJavaScript("fixtureAudioStreams[1].getTracks().every(track => track.readyState === 'ended')"), 'error releases microphone');
-  const partial = await win.webContents.executeJavaScript("JSON.parse(localStorage.getItem('bridge.meetings'))[0].entries[1]");
+  await click('#settings-form button[type=submit]');
+  await waitFor(() => view("!document.querySelector('#settings-dialog').open"), 'persist settings from UI');
+  if (settingsStore) assert.equal((await settingsStore.load(initialConfig({}))).providers.qwen.key, 'ui-fixture-only');
+
+  await click('#system-button');
+  await waitFor(() => upstreams[1]?.frames >= 2, 'meeting audio connected');
+  const systemAudio = upstreams[1];
+  assert.equal(systemAudio.targetLanguage, 'zh'); assert.deepEqual(systemAudio.modalities, ['text']);
+  await click('#autoplay');
+  await waitFor(() => upstreams[2]?.audioSent === true, 'turning on English output opens a separate microphone and streams audio');
+  const microphone = upstreams[2];
+  assert.equal(microphone.targetLanguage, 'en'); assert.deepEqual(microphone.modalities, ['text', 'audio']);
+  await waitFor(() => view("document.querySelector('#autoplay').checked && fixturePlaybackSinks.includes('fixture-cable')"), 'English frames use the dedicated sink');
+  assert.deepEqual(await view("[...new Set(fixturePlaybackSinks)]"), ['fixture-cable']);
+  const currentEntries = await entries();
+  assert.equal(currentEntries.find(entry => entry.audioSource === 'system').source, 'remote');
+  assert.equal(currentEntries.find(entry => entry.targetLanguage === 'en').source, 'me');
+  assert.equal(await view("document.querySelector('#mic-button').textContent"), '关闭我的麦克风');
+  assert.equal(await view("document.querySelector('#system-button').textContent"), '断开会议音频');
+  win.setSize(1442, 1000);
+  await delay(150);
+  fs.writeFileSync(path.join(out, 'meeting.png'), (await win.webContents.capturePage()).toPNG());
+
+  const english = 'I can take the next question.';
+  const played = await view('fixturePlaybackSinks.length');
+  microphone.feed({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'english-source', transcript: english, language: 'en' });
+  microphone.feed({ type: 'conversation.item.created', previous_item_id: 'english-source', item: { id: 'english-result', role: 'assistant' } });
+  microphone.feed({ type: 'response.audio.delta', item_id: 'english-result', delta: Buffer.alloc(4800).toString('base64') });
+  microphone.feed({ type: 'response.done', response: { id: 'english-response', status: 'completed', output: [{ id: 'english-result', content: [{ transcript: english }] }] } });
+  await waitFor(async () => (await entries()).some(entry => entry.original === english && entry.status === 'done'), 'same-language English output and original persisted');
+  const englishEntry = (await entries()).find(entry => entry.original === english);
+  assert.equal(englishEntry.english, english); assert.equal(englishEntry.chinese, '');
+  assert.ok(await view(`fixturePlaybackSinks.length > ${played}`));
+  assert.equal(await view("document.querySelector('.entry.me .caption-label').textContent"), '麦克风原文');
+
+  for (const enabled of [false, true, false, true]) {
+    await click('#autoplay');
+    await waitFor(() => view(`!document.querySelector('#autoplay').disabled && document.querySelector('#autoplay').checked === ${enabled}`), 'English mute or resume settled');
+    assert.equal(await view("document.querySelector('#mic-button').textContent"), '关闭我的麦克风');
+    assert.equal(microphone.updates, 1, 'playback must never reconfigure a running provider session');
+  }
+  microphone.feed({ type: 'response.audio.delta', item_id: 'translation', delta: Buffer.alloc(24000 * 2 * 9).toString('base64') });
+  await waitFor(() => view("!document.querySelector('#autoplay').checked && document.querySelector('#playback-status').textContent.includes('积压')"), 'backlog automatically mutes playback');
+  assert.equal(microphone.updates, 1, 'automatic backlog pause must also preserve the session');
+  await click('#autoplay');
+  await waitFor(() => view("document.querySelector('#autoplay').checked && !document.querySelector('#autoplay').disabled"), 'resumed English output');
+  await view("fixtureDevices[0].groupId = 'cable'; navigator.mediaDevices.dispatchEvent(new Event('devicechange'))");
+  await waitFor(() => view("!document.querySelector('#autoplay').checked && document.querySelector('#playback-status').textContent.includes('需要分开')"), 'English output mutes if the cable becomes the default playback device');
+  microphone.feed({ type: 'response.audio_transcript.delta', item_id: 'translation', delta: ' continues' });
+  await waitFor(() => view("document.querySelector('.entry.me .english').textContent === 'This API continues'"), 'captions continue after stopping speech');
+  assert.equal(microphone.updates, 1);
+  const systemFrames = systemAudio.frames;
+  microphone.feed({ type: 'error', error: { message: 'Fixture connection dropped' } });
+  await waitFor(() => view("fixtureMicStreams[1].getTracks().every(track => track.readyState === 'ended')"), 'error releases microphone');
+  const partial = (await entries()).find(entry => entry.english === 'This API continues');
   assert.equal(partial.status, 'error'); assert.equal(partial.english, 'This API continues'); assert.equal(partial.originalConfirmed, false);
-  assert.equal(upstreams[1].readyState, 3);
+  assert.equal(microphone.readyState, 3);
+  await waitFor(() => systemAudio.frames > systemFrames, 'incoming captions stay connected after microphone failure');
+  await click('#stop-audio');
+  await waitFor(() => view("!document.querySelector('#scenario-picker').disabled"), 'stop drains incoming captions');
+  assert.equal((await entries()).find(entry => entry.audioSource === 'system').status, 'done');
+  assert.equal(await view("fixtureSystemStreams[0].getTracks().every(track => track.readyState === 'ended')"), true);
+  assert.equal(await view("JSON.parse(localStorage.getItem('bridge.preferences')).scenario"), 'meeting');
+
+  await click('[name=scenario][value=translation]');
+  win.setSize(390, 844);
+  await delay(150);
+  fs.writeFileSync(path.join(out, 'complete.png'), (await win.webContents.capturePage()).toPNG());
+  const viewport = await view("({ width: document.documentElement.clientWidth, content: document.documentElement.scrollWidth })");
+  assert.equal(viewport.content, viewport.width, 'no horizontal overflow on a phone viewport');
   assert.deepEqual(rendererErrors, []);
   await win.webContents.executeJavaScript("Promise.all(fixtureAudioContexts.map(context => context.close()))");
-  console.log('Realtime UI check passed: interim captions during capture, streamed PCM, stop drains final result, male voice settings, persisted transcript and device cleanup after interruption.');
+  console.log('Realtime UI verified listening, concurrent meeting capture and English output, same-language output, muting, routing failure, and caption recovery.');
   console.log(`Screenshots: ${out}`);
 }).catch(error => { console.error(error.stack); process.exitCode = 1; }).finally(() => {
   win?.destroy(); handler?.upgrade.close(); server?.closeAllConnections(); server?.close(); app.exit(process.exitCode || 0);

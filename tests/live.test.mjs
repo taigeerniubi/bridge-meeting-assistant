@@ -36,6 +36,8 @@ test('live translation uses the correct protocol, language direction and termino
   assert.equal(legacy.voice, 'Aiden');
   assert.equal(legacy.input_audio_transcription.model, 'qwen3-asr-flash-realtime');
   assert.equal(legacy.input_audio_transcription.language, undefined);
+  assert.deepEqual(legacy.translation.same_language_skip_options, { skip_text: false, skip_audio: false });
+  assert.equal(session.translation.same_language_skip_options, undefined);
   assert.equal(legacy.turn_detection.type, 'server_vad');
   assert.throws(() => liveSession({ ...provider, liveModel: 'qwen3-asr-flash' }, { source: 'me' }), /LiveTranslate/);
 });

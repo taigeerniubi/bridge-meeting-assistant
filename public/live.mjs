@@ -4,7 +4,7 @@ export class RealtimeCapture {
   constructor({ csrf, source, targetLanguage, glossary, audio, onTranscript, onAudio, onLevel, onEnded, onError }) {
     Object.assign(this, { csrf, source, targetLanguage, glossary, audio, onTranscript, onAudio, onLevel, onEnded, onError });
     this.playbackEnabled = audio === true;
-    this.live = true; this.pre = []; this.preBytes = 0;
+    this.pre = []; this.preBytes = 0;
     this.finishedPromise = new Promise(resolve => { this.resolveFinished = resolve; });
     this.readyPromise = new Promise((resolve, reject) => { this.resolveReady = resolve; this.rejectReady = reject; });
     this.readyPromise.catch(() => {});

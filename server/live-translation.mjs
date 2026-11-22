@@ -13,7 +13,10 @@ export function liveSession(provider, { source, targetLanguage = source === 'me'
     modalities, voice: provider.liveVoice, sample_rate: 16000,
     input_audio_format: 'pcm', output_audio_format: 'pcm', enable_voice_clone: false,
     input_audio_transcription: { model: 'qwen3-asr-flash-realtime' },
-    turn_detection: { type: 'server_vad', threshold: 0.2, silence_duration_ms: 400 }, translation,
+    turn_detection: { type: 'server_vad', threshold: 0.2, silence_duration_ms: 400 },
+    translation: modalities.includes('audio')
+      ? { ...translation, same_language_skip_options: { skip_text: false, skip_audio: false } }
+      : translation,
   };
   if (!/^qwen3\.8-livetranslate-/.test(provider.liveModel)) throw new Error('实时同传需要 Qwen3.8 或 Qwen3.5 LiveTranslate Realtime 模型，请检查设置。');
   return {

@@ -145,3 +145,7 @@ node node_modules/electron/cli.js tests/realtime-ui.cjs
 代码入口：`server/index.mjs`（本机服务）、`server/live-translation.mjs`（同传网关及事件关联）、`server/providers.mjs`（普通识别、翻译、播报）、`public/app.mjs`（工作台）、`public/live.mjs`（同传连接与连续播放）、`public/capture.mjs`（浏览器音频）、`desktop/main.cjs`（Windows 桌面接入）。
 
 接口依据：[OpenAI 文件转写](https://developers.openai.com/api/docs/guides/speech-to-text)、[OpenAI Realtime](https://developers.openai.com/api/docs/guides/realtime-conversations)、[Qwen ASR](https://help.aliyun.com/en/model-studio/qwen-asr-api-reference)、[Qwen TTS](https://help.aliyun.com/en/model-studio/qwen-tts-api)、[Electron 系统音频采集](https://www.electronjs.org/docs/latest/api/desktop-capturer)、[VB-CABLE](https://vb-audio.com/Cable/)。
+
+## 许可证
+
+译桥源码采用 [MIT 许可证](LICENSE)。

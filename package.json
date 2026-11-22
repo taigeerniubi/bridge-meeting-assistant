@@ -2,6 +2,7 @@
   "name": "bridge-meeting-assistant",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "中英 IT 会议助手：双路音频、翻译、英文播报与会议纪要",
   "type": "module",
   "main": "desktop/main.cjs",
